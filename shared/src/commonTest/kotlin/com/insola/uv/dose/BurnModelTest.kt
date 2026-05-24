@@ -1,0 +1,84 @@
+package com.insola.uv.dose
+
+import com.insola.uv.domain.GeoPoint
+import com.insola.uv.domain.SkinSensitivity
+import com.insola.uv.domain.UvForecast
+import com.insola.uv.domain.UvSample
+import kotlinx.datetime.Instant
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
+
+class BurnModelTest {
+
+    private val origin = Instant.parse("2026-06-21T06:00:00Z")
+    private val location = GeoPoint(0.0, 0.0)
+
+    private fun forecast(curve: List<Double>): UvForecast {
+        val samples = curve.mapIndexed { i, uv ->
+            UvSample(origin + i.hours, uv)
+        }
+        return UvForecast(location, samples)
+    }
+
+    @Test
+    fun flatUv3TypeIII_crossesAtExpectedTime() {
+        // Type III MED = 3.9 UV-index-hours. At constant UV 3: 3.9 / 3 h = 78 min.
+        val f = forecast(List(8) { 3.0 })
+        val ttb = BurnModel.timeToThreshold(origin, f, SkinSensitivity.III, assumedFactor = 1.0)
+        assertNotNull(ttb)
+        assertEquals(78L, ttb.inWholeMinutes)
+    }
+
+    @Test
+    fun nightNeverBurns() {
+        val f = forecast(List(8) { 0.0 })
+        val ttb = BurnModel.timeToThreshold(origin, f, SkinSensitivity.II, assumedFactor = 1.0)
+        assertNull(ttb)
+    }
+
+    @Test
+    fun sunscreenDelaysBurn() {
+        val f = forecast(List(8) { 5.0 })
+        val noSpf = BurnModel.timeToThreshold(origin, f, SkinSensitivity.II, assumedFactor = 1.0)
+        val withSpf30 = BurnModel.timeToThreshold(origin, f, SkinSensitivity.II, assumedFactor = 1.0 / 30.0)
+        assertNotNull(noSpf)
+        if (withSpf30 != null) {
+            assertTrue(withSpf30 > noSpf)
+        }
+    }
+
+    @Test
+    fun darkerSkinTakesLonger() {
+        val f = forecast(List(8) { 4.0 })
+        val typeII = BurnModel.timeToThreshold(origin, f, SkinSensitivity.II, 1.0)
+        val typeV = BurnModel.timeToThreshold(origin, f, SkinSensitivity.V, 1.0)
+        assertNotNull(typeII)
+        assertNotNull(typeV)
+        assertTrue(typeV > typeII)
+    }
+
+    @Test
+    fun alreadyOverThreshold_returnsZero() {
+        val f = forecast(List(4) { 3.0 })
+        val ttb = BurnModel.timeToThreshold(
+            origin, f, SkinSensitivity.III, assumedFactor = 1.0, alreadyAccumulated = 100.0,
+        )
+        assertEquals(Duration.ZERO, ttb)
+    }
+
+    @Test
+    fun risingVsFalling_giveDifferentTimes() {
+        val rising = forecast(listOf(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0))
+        val falling = forecast(listOf(7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0))
+        val tR = BurnModel.timeToThreshold(origin, rising, SkinSensitivity.III, 1.0)
+        val tF = BurnModel.timeToThreshold(origin, falling, SkinSensitivity.III, 1.0)
+        assertNotNull(tR)
+        assertNotNull(tF)
+        assertTrue(tF < tR)
+    }
+}

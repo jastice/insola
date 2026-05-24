@@ -1,0 +1,107 @@
+package com.insola.uv.dose
+
+import com.insola.uv.domain.SkinSensitivity
+import com.insola.uv.domain.UvForecast
+import com.insola.uv.domain.UvSample
+import kotlinx.datetime.Instant
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+
+object BurnModel {
+
+    private data class EvaluatedSegment(
+        val segStart: Instant,
+        val uvA: Double,
+        val uvB: Double,
+        val hours: Double,
+        val dose: Double,
+    )
+
+    /**
+     * Forward-integrates from [now] over the [forecast]; returns the duration after which the
+     * accumulated dose crosses the MED threshold for [sensitivity], assuming a continuous
+     * [assumedFactor] exposure. Returns null if the threshold is never crossed within the forecast.
+     */
+    fun timeToThreshold(
+        now: Instant,
+        forecast: UvForecast,
+        sensitivity: SkinSensitivity,
+        assumedFactor: Double,
+        alreadyAccumulated: Double = 0.0,
+    ): Duration? {
+        val threshold = sensitivity.medThresholdUvIndexHours
+        if (assumedFactor <= 0.0) return null
+        if (alreadyAccumulated >= threshold) return Duration.ZERO
+        if (forecast.samples.size < 2) return null
+
+        val segments = forecast.samples
+            .zipWithNext()
+            .mapNotNull { (a, b) -> evaluateSegment(a, b, now, assumedFactor) }
+
+        // cumulative[k] = dose accumulated BEFORE segment k (cumulative[0] == alreadyAccumulated).
+        val cumulative = segments.runningFold(alreadyAccumulated) { acc, seg -> acc + seg.dose }
+        val crossIdx = cumulative.drop(1).indexOfFirst { it >= threshold }
+        if (crossIdx < 0) return null
+
+        val seg = segments[crossIdx]
+        val needed = threshold - cumulative[crossIdx]
+        val crossingHours = solveCrossingHours(seg.uvA, seg.uvB, seg.hours, assumedFactor, needed)
+        val crossingMillis = (crossingHours * 3_600_000.0).toLong()
+        return (seg.segStart - now) + crossingMillis.milliseconds
+    }
+
+    private fun evaluateSegment(
+        a: UvSample,
+        b: UvSample,
+        now: Instant,
+        factor: Double,
+    ): EvaluatedSegment? {
+        if (b.time <= now) return null
+        val segStart = maxOf(a.time, now)
+        val uvA = interpolate(a.time, a.uvIndex, b.time, b.uvIndex, segStart)
+        val hours = (b.time - segStart).inWholeMilliseconds / 3_600_000.0
+        val dose = 0.5 * (uvA + b.uvIndex) * hours * factor
+        return EvaluatedSegment(segStart, uvA, b.uvIndex, hours, dose)
+    }
+
+    private fun interpolate(t0: Instant, v0: Double, t1: Instant, v1: Double, at: Instant): Double {
+        if (t1 == t0) return v0
+        val span = (t1 - t0).inWholeMilliseconds.toDouble()
+        val t = (at - t0).inWholeMilliseconds.toDouble() / span
+        val clamped = t.coerceIn(0.0, 1.0)
+        return v0 + (v1 - v0) * clamped
+    }
+
+    /**
+     * Within a segment whose UV ramps linearly from [uvA] to [uvB] over [hours], find the time
+     * (in hours from segment start) at which the integrated `factor*uv` reaches [needed].
+     *
+     * Dose(t) = factor * (uvA*t + 0.5*(uvB-uvA)/hours * t^2). Solve quadratic.
+     */
+    private fun solveCrossingHours(
+        uvA: Double,
+        uvB: Double,
+        hours: Double,
+        factor: Double,
+        needed: Double,
+    ): Double {
+        if (hours <= 0.0) return 0.0
+        val slope = (uvB - uvA) / hours
+        if (slope == 0.0) {
+            // constant UV: dose = factor * uvA * t
+            if (uvA <= 0.0) return hours
+            return (needed / (factor * uvA)).coerceIn(0.0, hours)
+        }
+        // factor * (uvA * t + 0.5 * slope * t^2) = needed
+        val a = 0.5 * slope * factor
+        val b = uvA * factor
+        val c = -needed
+        val disc = b * b - 4 * a * c
+        if (disc < 0) return hours
+        val sqrt = kotlin.math.sqrt(disc)
+        val t1 = (-b + sqrt) / (2 * a)
+        val t2 = (-b - sqrt) / (2 * a)
+        val candidates = listOf(t1, t2).filter { it in 0.0..hours }
+        return candidates.minOrNull() ?: hours
+    }
+}

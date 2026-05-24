@@ -12,6 +12,7 @@ kotlin {
         namespace = "com.insola.uv.shared"
         compileSdk = libs.versions.android.compile.sdk.get().toInt()
         minSdk = libs.versions.android.min.sdk.get().toInt()
+        withHostTest { }
     }
 
     // iOS targets are stubbed out — see iosApp/README.md.
@@ -30,9 +31,13 @@ kotlin {
             implementation(libs.compose.material3)
             implementation(libs.compose.ui)
             implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.datetime)
             implementation(libs.androidx.lifecycle.viewmodel)
             implementation(libs.androidx.lifecycle.viewmodel.compose)
             implementation(libs.androidx.lifecycle.runtime.compose)
+        }
+        commonTest.dependencies {
+            implementation(libs.kotlin.test)
         }
     }
 }
