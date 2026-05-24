@@ -8,7 +8,7 @@ plugins {
 kotlin {
     jvmToolchain(17)
 
-    androidLibrary {
+    android {
         namespace = "com.insola.uv.shared"
         compileSdk = libs.versions.android.compile.sdk.get().toInt()
         minSdk = libs.versions.android.min.sdk.get().toInt()
