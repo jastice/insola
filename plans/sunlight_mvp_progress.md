@@ -38,9 +38,44 @@ BUILD SUCCESSFUL — 20 tests, 0 failures
 - `BurnModel.solveCrossingHours` uses the quadratic formed by integrating a linear UV ramp; falls back to linear when slope ≈ 0.
 - **Skin sensitivity uses the Fitzpatrick scale (I–VI)** rather than vague labels. MED thresholds in UV-index-hours derived from published per-type values in J/m² via the conversion 1 UV-index-hour ≈ 90 J/m² (1 UV-index unit ≈ 25 mW/m² erythemally weighted): I=2.2, II=2.8, III=3.9, IV=5.0, V=6.7, VI=11.1. `SkinSensitivity.Default = III`. Each enum carries a short behavioral description for UI use.
 
-## Phase 1.5 — Synthetic-data dashboard
+## Phase 1.5 — Synthetic-data dashboard ✅ (2026-05-24)
 
-Not started.
+UI-complete dashboard backed by in-memory fixtures and a scrubbed clock. No network or persistence yet.
+
+### Files added
+
+- `shared/src/commonMain/kotlin/com/insola/uv/data/UvForecastProvider.kt` — interface for Phase 2.
+- `shared/src/commonMain/kotlin/com/insola/uv/data/FakeUvForecastProvider.kt` — wraps a Scenario.
+- `shared/src/commonMain/kotlin/com/insola/uv/dev/Fixtures.kt` — `Scenario` plus six canned scenes: equatorialNoon (Singapore), berlinSummer, reykjavikWinter, cloudyAfternoon (Paris), and mirrorRising / mirrorFalling (the same hourly curve and its reverse — same EOD dose, very different midday accumulation).
+- `shared/src/commonMain/kotlin/com/insola/uv/domain/UvForecastExt.kt` — `UvForecast.uvAt(time)` for the current-UV readout.
+- `shared/src/commonMain/kotlin/com/insola/uv/dashboard/DashboardCompute.kt` — pure derivation of `DashboardState` from `(scenario, hourOfDay, sensitivity)`. Lives outside the ViewModel so it's testable without a coroutine scope.
+- `shared/src/commonMain/kotlin/com/insola/uv/dashboard/DashboardViewModel.kt` — `combine(scenarioId, hourOfDay, sensitivity).stateIn(...)` over `DashboardCompute.compute`.
+- `shared/src/commonMain/kotlin/com/insola/uv/dashboard/DashboardScreen.kt` — Material3 composable: scenario chip row, current UV + solar elevation, UV budget meter, time-to-burn, vit-D bucket, time scrubber (0–24 h, 15-min increments), Fitzpatrick chip picker.
+- Deleted the old `UvViewModel.kt` placeholder; `App.kt` now hosts `DashboardScreen`.
+
+### Tests added — `DashboardComputeTest` (5)
+
+Drives `DashboardCompute.compute` directly to verify every Checkpoint 1.5 claim from the plan:
+
+- **Equatorial noon** at hour 12, Type III → current UV > 8, time-to-burn < 60 min, vit-D ≥ Adequate.
+- **Reykjavík winter** at hour 23.5, Type II → time-to-burn null, vit-D None. (Curve total ~2.0 UV-idx·h is tuned to stay under Type I's 2.2 MED so even continuous outdoor exposure across the full day does not trigger a burn warning.)
+- **Monotonic accumulation** — sweeping hour 0→24 in Berlin produces a non-decreasing accumulated-dose series.
+- **Mirrored curves** — rising and falling scenarios have identical EOD dose but the falling curve has > 2× the rising curve's accumulated dose at hour 12. (Tested via accumulated dose rather than time-to-burn because both curve totals far exceed every MED, so time-to-burn ties at 0 at noon and obscures the underlying signal.)
+- **Skin sensitivity rescaling** — at hour 7 in Berlin (accumulated ≈ 1.8 UV-idx·h, below both bounds), Type I uses a higher budget % and a shorter time-to-burn than Type VI.
+
+### Checkpoint 1.5 — ✅ automated
+
+Plan calls this a manual gate. Drove it automatically via `DashboardComputeTest` because the UI just renders the values the test pins. All 5 dashboard tests + the 20 Phase 1 tests = **25 tests green**. `:composeApp:assembleDebug` builds cleanly.
+
+Manual smoke (eyeballing the live UI on an emulator/device) is still worth doing once before Phase 2 to verify slider feel, chip layout, and that nothing crashes — but the numerical claims are now under test.
+
+### Notes / decisions
+
+- Compute is pure and synchronous (the dose math is cheap) — `combine(...).stateIn(Eagerly, initial)` is enough; no `viewModelScope` work happens off the calling thread.
+- `Fixtures.Scenario` stores `dayStart` as the `Instant` of midnight **local** at the location so `SolarGeometry` returns realistic elevations when keyed by `dayStart + hourOfDay.hours`. Each scenario carries a comment noting the UTC offset used.
+- The dev dashboard owns scenario selection directly; `FakeUvForecastProvider` is wired up for Phase 2 / 3 use and isn't yet on the hot path.
+- Phase 1.5 makes the dashboard *always* show the dev controls. The plan calls for a `BuildConfig.DEBUG` gate; that lands in Phase 2 when the real provider arrives.
+- `skinExposedFraction` is hardcoded to 0.25 in the compute (rough "arms + face + neck"). User-controllable in a later phase.
 
 ## Phase 2 — Real UV + real location
 
