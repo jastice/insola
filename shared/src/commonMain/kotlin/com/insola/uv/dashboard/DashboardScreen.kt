@@ -1,31 +1,43 @@
 package com.insola.uv.dashboard
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.dose.VitaminDModel
 import kotlin.time.Duration
+
+private val OutdoorGreen = Color(0xFF34A853)
+private val IndoorGray = Color(0xFF9E9E9E)
 
 @Composable
 fun DashboardScreen(viewModel: DashboardViewModel, modifier: Modifier = Modifier) {
@@ -36,11 +48,18 @@ fun DashboardScreen(viewModel: DashboardViewModel, modifier: Modifier = Modifier
     ) {
         item { ScenarioPicker(viewModel.scenarios.map { it.id to it.name }, state.scenario.id, viewModel::selectScenario) }
         item { Text(state.scenario.description, style = MaterialTheme.typography.bodySmall) }
+        item {
+            UvTodayCard(
+                state = state,
+                onHourChange = viewModel::setHourOfDay,
+                onToggleOutside = viewModel::toggleOutside,
+                onClearSessions = viewModel::clearSessions,
+            )
+        }
         item { CurrentUvCard(state) }
         item { BudgetCard(state) }
         item { TimeToBurnCard(state.timeToBurn) }
         item { VitaminDCard(state.vitaminDBucket) }
-        item { ClockScrubber(state.hourOfDay, viewModel::setHourOfDay) }
         item { SensitivityPicker(state.sensitivity, viewModel::setSensitivity) }
     }
 }
@@ -66,6 +85,75 @@ private fun ScenarioPicker(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun UvTodayCard(
+    state: DashboardState,
+    onHourChange: (Double) -> Unit,
+    onToggleOutside: () -> Unit,
+    onClearSessions: () -> Unit,
+) {
+    Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("UV today", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    formatClock(state.hourOfDay),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            UvCurveChart(
+                scenario = state.scenario,
+                hourOfDay = state.hourOfDay,
+                sessions = state.sessions,
+                onHourChange = onHourChange,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                LegendDot(OutdoorGreen, "Outdoor")
+                LegendDot(IndoorGray.copy(alpha = 0.55f), "Indoor")
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(
+                    onClick = onToggleOutside,
+                    modifier = Modifier.weight(1f),
+                    colors = if (state.isCurrentlyOutside) ButtonDefaults.buttonColors(
+                        containerColor = OutdoorGreen,
+                        contentColor = Color.White,
+                    ) else ButtonDefaults.buttonColors(),
+                ) {
+                    Text(if (state.isCurrentlyOutside) "Go inside" else "Go outside")
+                }
+                if (state.sessions.isNotEmpty()) {
+                    TextButton(onClick = onClearSessions) { Text("Clear") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LegendDot(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(color))
+        Spacer(Modifier.size(6.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -111,7 +199,7 @@ private fun BudgetCard(state: DashboardState) {
 private fun TimeToBurnCard(timeToBurn: Duration?) {
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
-            Text("Time to burn", style = MaterialTheme.typography.labelMedium)
+            Text("Time to burn (if outside now)", style = MaterialTheme.typography.labelMedium)
             Text(
                 text = timeToBurn?.let(::formatDuration) ?: "No burn risk today",
                 style = MaterialTheme.typography.headlineMedium,
@@ -133,24 +221,6 @@ private fun VitaminDCard(bucket: VitaminDModel.Bucket) {
         Column(Modifier.padding(16.dp)) {
             Text("Vitamin D so far", style = MaterialTheme.typography.labelMedium)
             Text(label, style = MaterialTheme.typography.headlineMedium)
-        }
-    }
-}
-
-@Composable
-private fun ClockScrubber(hourOfDay: Double, onChange: (Double) -> Unit) {
-    Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
-            Text(
-                "Simulated clock — ${formatClock(hourOfDay)} local",
-                style = MaterialTheme.typography.labelMedium,
-            )
-            Slider(
-                value = hourOfDay.toFloat(),
-                onValueChange = { onChange(it.toDouble()) },
-                valueRange = 0f..24f,
-                steps = 95, // 15-minute increments
-            )
         }
     }
 }

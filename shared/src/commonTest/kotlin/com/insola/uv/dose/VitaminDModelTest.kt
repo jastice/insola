@@ -1,6 +1,7 @@
 package com.insola.uv.dose
 
 import com.insola.uv.domain.GeoPoint
+import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.domain.UvForecast
 import com.insola.uv.domain.UvSample
 import kotlinx.datetime.Instant
@@ -12,15 +13,19 @@ import kotlin.time.Duration.Companion.hours
 class VitaminDModelTest {
 
     @Test
-    fun arcticWinter_noVitaminD() {
+    fun arcticWinter_negligibleVitaminD() {
+        // Reykjavik on the winter solstice: sun clears the horizon for only ~3h, peaking at
+        // ~2.4°. The VitD/erythemal ratio collapses near the horizon, so even with an
+        // artificial flat UVI=1.0 the score stays in the Trace bucket — well below ¼ SDD
+        // and far enough from the Low cutoff to confirm the elevation weighting bites.
         val reykjavik = GeoPoint(64.13, -21.94)
         val start = Instant.parse("2026-12-21T08:00:00Z")
         val end = Instant.parse("2026-12-21T16:00:00Z")
         val samples = (0..8).map { UvSample(start + it.hours, 1.0) }
         val forecast = UvForecast(reykjavik, samples)
         val score = VitaminDModel.accumulate(forecast, start, end, skinExposedFraction = 0.5)
-        assertEquals(0.0, score, 1e-9)
-        assertEquals(VitaminDModel.Bucket.None, VitaminDModel.bucket(score))
+        assertTrue(score < 0.0625 * SkinSensitivity.III.medThresholdUvIndexHours, "expected sub-Trace score, got $score")
+        assertTrue(VitaminDModel.bucket(score, SkinSensitivity.III) <= VitaminDModel.Bucket.Trace)
     }
 
     @Test
@@ -32,7 +37,7 @@ class VitaminDModelTest {
         val forecast = UvForecast(equator, samples)
         val score = VitaminDModel.accumulate(forecast, start, end, skinExposedFraction = 0.5)
         assertTrue(score > 0.0, "expected positive vit-D score, got $score")
-        assertTrue(VitaminDModel.bucket(score) != VitaminDModel.Bucket.None)
+        assertTrue(VitaminDModel.bucket(score, SkinSensitivity.III) != VitaminDModel.Bucket.None)
     }
 
     @Test

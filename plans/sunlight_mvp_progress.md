@@ -77,6 +77,38 @@ Manual smoke (eyeballing the live UI on an emulator/device) is still worth doing
 - Phase 1.5 makes the dashboard *always* show the dev controls. The plan calls for a `BuildConfig.DEBUG` gate; that lands in Phase 2 when the real provider arrives.
 - `skinExposedFraction` is hardcoded to 0.25 in the compute (rough "arms + face + neck"). User-controllable in a later phase.
 
+## Phase 1.6 — UV-over-day chart + outdoor session log ✅ (2026-05-25)
+
+Replaces the "continuous outdoor all day" assumption with an explicit log of outdoor sessions, and adds a visual UV projection chart so the user can see what the day looks like.
+
+### Files added
+
+- `shared/src/commonMain/kotlin/com/insola/uv/domain/OutdoorSession.kt` — `data class OutdoorSession(start, end?)`. `end = null` ⇒ session is open (currently outside). `effectiveEnd(now)` and `toInterval(now)` make conversion to `ExposureInterval` explicit.
+- `shared/src/commonMain/kotlin/com/insola/uv/dashboard/UvCurveChart.kt` — Compose Canvas: filled area under the hourly UV curve, primary-color outline, "now" vertical marker, tertiary-color shaded bands per logged session, 0/6/12/18/24 hour ticks below.
+
+### Files changed
+
+- `shared/src/commonMain/kotlin/com/insola/uv/dose/VitaminDModel.kt` — added `accumulateOverIntervals` and `bucketForIntervals` (each interval folds its own `accumulate` with `skinExposedFraction * exposureFactor`).
+- `shared/src/commonMain/kotlin/com/insola/uv/dashboard/DashboardCompute.kt` — now integrates **only** over logged sessions (clipped to `[dayStart, now]`). Vit-D follows the same intervals. Time-to-burn unchanged: still projects "if you were outside continuously from now" — useful as a what-if regardless of current status.
+- `shared/src/commonMain/kotlin/com/insola/uv/dashboard/DashboardViewModel.kt` — added `sessionsFlow`, `toggleOutside()`, `clearSessions()`, `removeSession(index)`. Switching scenarios clears the log (sessions are anchored to a scenario's day).
+- `shared/src/commonMain/kotlin/com/insola/uv/dashboard/DashboardScreen.kt` — added `UvProjectionCard` (hosts the chart) and `OutdoorLogCard` (toggle button + session list with per-row remove + bulk Clear).
+
+### Tests added — `DashboardComputeTest` extensions (4 new, 9 total)
+
+- **`emptyLog_meansNoAccumulatedDose_andNoVitD`** — no logged time ⇒ 0 dose, `Bucket.None`. Time-to-burn still resolves (it's a hypothetical).
+- **`openSession_accruesDoseUntilNow`** — open session 10→null at hour 12 matches a closed 10→12 session exactly; `isCurrentlyOutside` flagged only for the open one.
+- **`shorterSession_yieldsLessDose`** — 1 h vs 4 h around solar noon: longer session ⇒ more dose.
+- **`futureSession_doesNotContribute`** — session scheduled for hours 14–16 with now=10 contributes 0.
+
+Existing 5 tests rewritten to inject a `fullDaySession()` helper so their "continuous outdoor" semantics survive the model change. **29 tests, all green.**
+
+### Notes / decisions
+
+- **Semantic shift:** accumulated dose and vit-D now reflect *actually logged* time outside, not continuous outdoor exposure. This is the honest accounting the app eventually wants; the continuous assumption was a placeholder.
+- Time-to-burn intentionally keeps the projection semantics ("if you went outside now") — it's still useful when you're inside debating whether to head out, and it's the natural prompt for the upcoming "go outside?" UX.
+- Switching scenarios clears the log because session `Instant`s are bound to the previous scenario's `dayStart`. Cheaper than translating them.
+- The chart uses raw `hourlyUv` for shape (not the interpolated `uvAt`) — the hourly samples are the source of truth and look identical at chart resolution.
+
 ## Phase 2 — Real UV + real location
 
 Not started.
