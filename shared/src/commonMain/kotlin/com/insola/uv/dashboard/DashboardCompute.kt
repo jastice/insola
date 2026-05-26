@@ -8,6 +8,7 @@ import com.insola.uv.dose.BurnModel
 import com.insola.uv.dose.DoseIntegrator
 import com.insola.uv.dose.VitaminDModel
 import com.insola.uv.solar.SolarGeometry
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 
 /**
@@ -34,6 +35,10 @@ object DashboardCompute {
             .map { it.toInterval(now) }
             .filter { it.end > it.start && it.start < now }
             .map { it.copy(end = minOf(it.end, now)) }
+        val timeOutside = effectiveIntervals
+            .sumOf { (it.end - it.start).inWholeMilliseconds }
+            .milliseconds
+        val daylight = SolarGeometry.daylightWindow(scenario.location, scenario.dayStart)
 
         val accumulated = DoseIntegrator.integrateOverIntervals(forecast, effectiveIntervals)
         val budgetPercent = accumulated / sensitivity.medThresholdUvIndexHours * 100.0
@@ -44,12 +49,12 @@ object DashboardCompute {
             assumedFactor = 1.0,
             alreadyAccumulated = accumulated,
         )
-        val vitDBucket = VitaminDModel.bucketForIntervals(
+        val vitDScore = VitaminDModel.accumulateOverIntervals(
             forecast = forecast,
             intervals = effectiveIntervals,
-            sensitivity = sensitivity,
             skinExposedFraction = 0.25,
         )
+        val vitDBucket = VitaminDModel.bucket(vitDScore, sensitivity)
         val isCurrentlyOutside = sessions.lastOrNull()?.let { it.isOpen && it.start <= now } == true
         return DashboardState(
             scenario = scenario,
@@ -58,11 +63,15 @@ object DashboardCompute {
             sensitivity = sensitivity,
             currentUv = currentUv,
             solarElevationDeg = elevation,
+            sunriseHour = daylight.sunriseHour,
+            sunsetHour = daylight.sunsetHour,
             accumulatedDose = accumulated,
             budgetPercent = budgetPercent,
             timeToBurn = timeToBurn,
+            vitaminDScore = vitDScore,
             vitaminDBucket = vitDBucket,
             sessions = sessions,
+            timeOutside = timeOutside,
             isCurrentlyOutside = isCurrentlyOutside,
         )
     }

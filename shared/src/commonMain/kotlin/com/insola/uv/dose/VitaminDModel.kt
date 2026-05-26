@@ -22,9 +22,11 @@ import kotlin.math.cos
  *
  * Integration shape mirrors [DoseIntegrator] / [BurnModel] — UV-index over time — but
  * reweighted by [vitDRatio]. Accumulated score has units of *vitamin-D-weighted
- * UV-index-hours*, so buckets are fractions of the user's MED. Webb & Engelsen's
- * "Standard Vitamin D Dose" (≈1000 IU for skin type II at ~25% body exposure) lands near
- * ¼ MED of vitamin-D-weighted dose.
+ * UV-index-hours* (with body fraction folded in via [skinExposedFraction]). Holick's
+ * rule (¼ MED on ¼ body → ~1000 IU) puts 1 Standard Vitamin D Dose at ¹⁄₁₆ MED of
+ * vit-D-weighted score at mid-elevation sun, so vit-D saturates at <10 min around solar
+ * noon while burn dose is still well under MED — matching the well-established fact that
+ * vitamin-D synthesis saturates long before erythema.
  *
  * Caveats:
  *  - The lumisterol/tachysterol back-reaction is not modelled; saturation is a bucket
@@ -59,13 +61,19 @@ object VitaminDModel {
     }
 
     fun bucket(score: Double, sensitivity: SkinSensitivity): Bucket {
-        val med = sensitivity.medThresholdUvIndexHours
+        // Holick's rule: 1 SDD (~1000 IU) ≈ ¼ MED of erythemal exposure on ¼ of the body
+        // surface. The 25% body fraction is already folded into the [skinExposedFraction]
+        // passed to [accumulate], so the SDD expressed in our vit-D-weighted score units
+        // is ¼ × ¼ = ¹⁄₁₆ of an MED at R≈1 (mid-elevation sun). Higher-angle sun produces
+        // proportionally more vit-D per unit time — R > 1 pushes the user into Likely
+        // sooner than into MED, which matches reality (vit-D saturates well before burn).
+        val sdd = sensitivity.medThresholdUvIndexHours / 16.0
         return when {
-            score <= 0.0          -> Bucket.None
-            score < 0.0625 * med  -> Bucket.Trace     // < ¼ SDD
-            score < 0.125 * med   -> Bucket.Low       // ¼ – ½ SDD
-            score < 0.25 * med    -> Bucket.Adequate  // ½ – 1 SDD
-            else                  -> Bucket.Likely    // ≥ 1 SDD ≈ ¼ MED of vit-D-weighted dose
+            score <= 0.0        -> Bucket.None
+            score < 0.25 * sdd  -> Bucket.Trace     // < ¼ SDD
+            score < 0.5 * sdd   -> Bucket.Low       // ¼ – ½ SDD
+            score < sdd         -> Bucket.Adequate  // ½ – 1 SDD
+            else                -> Bucket.Likely    // ≥ 1 SDD
         }
     }
 

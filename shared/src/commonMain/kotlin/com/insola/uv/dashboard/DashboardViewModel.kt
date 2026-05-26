@@ -26,11 +26,15 @@ data class DashboardState(
     val sensitivity: SkinSensitivity,
     val currentUv: Double,
     val solarElevationDeg: Double,
+    val sunriseHour: Double?,
+    val sunsetHour: Double?,
     val accumulatedDose: Double,
     val budgetPercent: Double,
     val timeToBurn: Duration?,
+    val vitaminDScore: Double,
     val vitaminDBucket: VitaminDModel.Bucket,
     val sessions: List<OutdoorSession>,
+    val timeOutside: Duration,
     val isCurrentlyOutside: Boolean,
 )
 

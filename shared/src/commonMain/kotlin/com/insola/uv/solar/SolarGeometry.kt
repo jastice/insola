@@ -6,10 +6,9 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.math.PI
 import kotlin.math.acos
-import kotlin.math.asin
 import kotlin.math.cos
 import kotlin.math.sin
-import kotlin.math.tan
+import kotlin.time.Duration.Companion.minutes
 
 object SolarGeometry {
 
@@ -50,4 +49,42 @@ object SolarGeometry {
         val elevation = (PI / 2.0 - zenith) * RAD
         return elevation
     }
+
+    /**
+     * Sunrise and sunset as hour-of-day offsets from [dayStart], or null when the sun never crosses
+     * the horizon (polar night). When the sun stays above the horizon all day (polar day) the
+     * window is `0.0..24.0`.
+     *
+     * Implementation: coarse 10-min scan to bracket each transition, then 5-step bisection,
+     * landing at sub-minute precision — plenty for chart shading.
+     */
+    fun daylightWindow(point: GeoPoint, dayStart: Instant): DaylightWindow {
+        val stepMinutes = 10
+        val samples = (0..(24 * 60) step stepMinutes).map { mins ->
+            mins / 60.0 to solarElevationDegrees(point, dayStart + mins.minutes)
+        }
+        val above = samples.map { it.second > 0.0 }
+        if (above.none { it }) return DaylightWindow(null, null)
+        if (above.all { it }) return DaylightWindow(0.0, 24.0)
+
+        fun bisectCrossing(lowHour: Double, highHour: Double, rising: Boolean): Double {
+            var lo = lowHour
+            var hi = highHour
+            repeat(8) {
+                val mid = (lo + hi) / 2.0
+                val midMinutes = (mid * 60).toLong()
+                val elev = solarElevationDegrees(point, dayStart + midMinutes.minutes)
+                if ((elev > 0.0) == rising) hi = mid else lo = mid
+            }
+            return (lo + hi) / 2.0
+        }
+
+        val sunrise = samples.zipWithNext().firstOrNull { (a, b) -> !(a.second > 0.0) && b.second > 0.0 }
+            ?.let { (a, b) -> bisectCrossing(a.first, b.first, rising = true) }
+        val sunset = samples.zipWithNext().lastOrNull { (a, b) -> a.second > 0.0 && !(b.second > 0.0) }
+            ?.let { (a, b) -> bisectCrossing(a.first, b.first, rising = false) }
+        return DaylightWindow(sunrise, sunset)
+    }
+
+    data class DaylightWindow(val sunriseHour: Double?, val sunsetHour: Double?)
 }
