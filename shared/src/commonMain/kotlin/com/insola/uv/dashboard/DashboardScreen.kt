@@ -569,12 +569,11 @@ private fun ApplySunscreenCard(
     onClear: () -> Unit,
 ) {
     var applySelection by rememberSaveable {
-        mutableStateOf(activePatch?.let { Spf.nearestForTransmittance(it.transmittance) } ?: Spf.Spf30)
+        mutableStateOf(activePatch?.let { Spf.nearestForTransmittance(it.labelTransmittance) } ?: Spf.Spf30)
     }
     val isActive = activePatch != null
-    val remaining = activePatch?.remainingAt(now) ?: Duration.ZERO
-    val patchDuration = activePatch?.duration ?: AttenuationTimeline.DEFAULT_DURATION
-    val fraction = (remaining / patchDuration).toFloat().coerceIn(0f, 1f)
+    val remaining = activePatch?.remainingHintAt(now) ?: Duration.ZERO
+    val fraction = (remaining / AttenuationTimeline.REAPPLY_HINT_DURATION).toFloat().coerceIn(0f, 1f)
 
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
@@ -641,13 +640,13 @@ private fun RemainingTimeBar(
         Text(
             text = when {
                 activePatch != null -> {
-                    val label = Spf.nearestForTransmittance(activePatch.transmittance).factor
+                    val label = Spf.nearestForTransmittance(activePatch.labelTransmittance).factor
                     "SPF $label · ${formatDuration(remaining)} remaining"
                 }
                 hasAnyPatch ->
                     "Expired — fell back to " +
                         if (defaultSpf == Spf.Off) "no protection" else "default SPF ${defaultSpf.factor}"
-                else -> "Tap Apply for ${formatDuration(AttenuationTimeline.DEFAULT_DURATION)} of protection"
+                else -> "Tap Apply for ${formatDuration(AttenuationTimeline.REAPPLY_HINT_DURATION)} of protection"
             },
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.weight(1f),

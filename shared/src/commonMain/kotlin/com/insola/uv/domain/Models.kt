@@ -1,8 +1,12 @@
 package com.insola.uv.domain
 
 import kotlinx.datetime.Instant
+import kotlin.math.exp
+import kotlin.math.pow
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.DurationUnit
 
 data class GeoPoint(
     val latitude: Double,
@@ -158,9 +162,8 @@ enum class Spf(val factor: Int, val description: String) {
 /**
  * Piecewise UV transmittance vs. time, modelling whatever sunscreen the user is wearing.
  * The dose integrator only ever queries [transmittanceAt] — never an SPF enum — so the model
- * is freely numeric: today each [Patch] is a 2-hour step at a fixed transmittance, tomorrow
- * we can swap in a gradual-decay curve by changing only [Patch.transmittanceAt] without
- * touching the integrator or the ViewModel.
+ * is freely numeric: each [Patch] now smoothly decays via [Patch.transmittanceAt], and the
+ * integrator just sub-slices the exposure interval and reads the scalar at each slice.
  *
  * Patches compose by `min`: when multiple are active at the same instant, the strongest
  * (smallest transmittance) wins. This is what makes reapplying safe — a later patch can
@@ -168,6 +171,9 @@ enum class Spf(val factor: Int, val description: String) {
  *
  * The always-on [SkinProfile.defaultSpf] is *not* a patch; the integrator applies it as a
  * baseline alongside whatever the timeline says.
+ *
+ * See `SunscreenModel.md` for the decay model, the real-world reduction factors baked into
+ * the defaults, and the literature behind both.
  */
 data class AttenuationTimeline(val patches: List<Patch>) {
 
@@ -176,44 +182,145 @@ data class AttenuationTimeline(val patches: List<Patch>) {
         patches.fold(1.0) { acc, p -> minOf(acc, p.transmittanceAt(t)) }
 
     /**
-     * Latest patch still covering [t], or null. The UI uses this for the countdown bar /
-     * "active SPF" readout; the integrator does not — it integrates against [transmittanceAt].
+     * Latest patch still inside its "reapply soon" hint window at [t], or null. The UI uses
+     * this for the countdown bar / "active SPF" readout; the integrator does not — it
+     * integrates against [transmittanceAt], which continues to count residual protection
+     * past the hint window.
      */
     fun activeAt(t: Instant): Patch? =
         patches.filter { it.isActiveAt(t) }.maxByOrNull { it.appliedAt }
 
-    /** Instants where transmittance may step. Used by the integrator to slice exposure intervals. */
+    /**
+     * Time points at which the integrator should sub-slice an exposure interval so the smooth
+     * decay is sampled finely enough. Returns each patch's apply time plus regular samples
+     * out to its modelling horizon — beyond that the patch is treated as bare skin.
+     */
     fun criticalTimes(): List<Instant> =
-        patches.flatMap { listOf(it.appliedAt, it.expiresAt) }
+        patches.flatMap { it.samplingTimes().toList() }
 
     operator fun plus(patch: Patch): AttenuationTimeline = AttenuationTimeline(patches + patch)
 
     /**
-     * One patch of attenuation. The current shape is a step — full protection at [transmittance]
-     * for [duration], then bare skin (transmittance 1.0). To model gradual decay later, swap
-     * the body of [transmittanceAt] with a smooth curve; callers only see the scalar result.
+     * One application of sunscreen, modelled as an exponential decay of the *excess*
+     * protection factor `(S − 1)` from an initial effective SPF `S` toward bare skin
+     * (`P = 1`):
+     *
+     *   `P(t) = 1 + (S − 1) · exp(−(t − appliedAt) / τ)`
+     *   `transmittance(t) = 1 / P(t)`
+     *
+     * The initial effective SPF `S` is *not* the label SPF — it is the label derated for the
+     * fact that users almost never apply the 2 mg/cm² lab-standard thickness. With Wulf's
+     * exponential thickness law `S_eff = label^thickness` (Faurschou & Wulf 2007; Petersen &
+     * Wulf 2014), a typical [TYPICAL_APPLICATION_THICKNESS] = 0.5 mg/cm²/lab application
+     * drops SPF-30 to ≈ √30 ≈ 5.5.
+     *
+     * Half-life [NOMINAL_HALF_LIFE_HOURS] = 2 h tracks the dermatology "reapply every 2 h"
+     * recommendation (Diffey 2001) — the time after which effective protection has dropped
+     * to about half. [wearMultiplier] scales the half-life for water immersion or heavy
+     * sweat, which roughly halve it (Stokes & Diffey 1999). See `SunscreenModel.md` for the
+     * full derivation and references.
      */
     data class Patch(
         val appliedAt: Instant,
-        val transmittance: Double,
-        val duration: Duration = DEFAULT_DURATION,
+        /** Labeled SPF transmittance (e.g. `1/30` for SPF 30) — what's printed on the bottle. */
+        val labelTransmittance: Double,
+        /**
+         * Fraction of the 2 mg/cm² lab application thickness the user actually used. Default
+         * [TYPICAL_APPLICATION_THICKNESS] = 0.5 reflects the field median; set to 1.0 to
+         * model "lab-perfect" application.
+         */
+        val applicationThickness: Double = TYPICAL_APPLICATION_THICKNESS,
+        /**
+         * Half-life multiplier — 1.0 is dry skin under indoor conditions, ~0.5 for water
+         * immersion or heavy sweat (Stokes & Diffey 1999, Diffey 2001).
+         */
+        val wearMultiplier: Double = 1.0,
     ) {
-        val expiresAt: Instant get() = appliedAt + duration
+        /** Effective initial SPF after the application-thickness derate. */
+        val initialSpf: Double
+            get() {
+                val label = 1.0 / labelTransmittance
+                return label.pow(applicationThickness.coerceIn(0.0, 1.0))
+            }
+
+        /** UV transmittance at the moment of application — `1 / [initialSpf]`. */
+        val initialTransmittance: Double get() = 1.0 / initialSpf
+
+        /** Half-life of the excess protection factor `(S − 1)`, after the wear derate. */
+        val effectiveHalfLifeHours: Double
+            get() = NOMINAL_HALF_LIFE_HOURS * wearMultiplier
+
+        /**
+         * How long this patch is modelled. After [MODELLING_HALF_LIVES] half-lives the
+         * residual excess factor is ~1.5 %, well below the noise floor of the SPF model, so
+         * the integrator treats `t > expiresAt` as bare skin.
+         */
+        val effectiveLifetime: Duration
+            get() = (effectiveHalfLifeHours * MODELLING_HALF_LIVES).hours
+
+        val expiresAt: Instant get() = appliedAt + effectiveLifetime
 
         fun transmittanceAt(t: Instant): Double {
-            val elapsed = t - appliedAt
-            return if (elapsed >= Duration.ZERO && elapsed < duration) transmittance else 1.0
+            val elapsedHours = (t - appliedAt).toDouble(DurationUnit.HOURS)
+            val halfLife = effectiveHalfLifeHours
+            if (elapsedHours < 0.0 || halfLife <= 0.0) return 1.0
+            if (elapsedHours > halfLife * MODELLING_HALF_LIVES) return 1.0
+            val s = initialSpf
+            if (s <= 1.0) return 1.0
+            val tauHours = halfLife / LN_2
+            val p = 1.0 + (s - 1.0) * exp(-elapsedHours / tauHours)
+            return 1.0 / p
         }
 
-        fun isActiveAt(t: Instant): Boolean = t >= appliedAt && t < expiresAt
+        /** UI "reapply soon" hint window — 2 h matches the dermatology guideline. */
+        fun isActiveAt(t: Instant): Boolean {
+            val elapsed = t - appliedAt
+            return elapsed >= Duration.ZERO && elapsed < REAPPLY_HINT_DURATION
+        }
 
-        fun remainingAt(t: Instant): Duration = (expiresAt - t).coerceAtLeast(Duration.ZERO)
+        /** Remaining time in the [REAPPLY_HINT_DURATION] countdown, for the UI bar. */
+        fun remainingHintAt(t: Instant): Duration =
+            ((appliedAt + REAPPLY_HINT_DURATION) - t).coerceAtLeast(Duration.ZERO)
+
+        /**
+         * Sub-slicing points across the modelling horizon — uniform [SAMPLING_STEP] grid so
+         * the integrator's piecewise-constant approximation tracks the smooth decay closely.
+         */
+        fun samplingTimes(): Sequence<Instant> = sequence {
+            var t = appliedAt
+            val end = expiresAt
+            while (t <= end) {
+                yield(t)
+                t += SAMPLING_STEP
+            }
+        }
     }
 
     companion object {
         val Empty: AttenuationTimeline = AttenuationTimeline(emptyList())
 
-        /** Default patch lifetime — dermatology's "reapply every 2h" boundary. */
-        val DEFAULT_DURATION: Duration = 2.hours
+        /**
+         * Median field application thickness as a fraction of the 2 mg/cm² lab dose
+         * (Petersen & Wulf 2014; range ~0.4–1.0 in the literature).
+         */
+        const val TYPICAL_APPLICATION_THICKNESS: Double = 0.5
+
+        /** Nominal half-life of the excess protection factor — matches "reapply every 2 h". */
+        const val NOMINAL_HALF_LIFE_HOURS: Double = 2.0
+
+        /**
+         * How many half-lives the integrator continues to count residual protection. At 6
+         * half-lives the excess factor has decayed to ~1.5 % — below the SPF model's noise
+         * floor — so further sampling adds no signal.
+         */
+        const val MODELLING_HALF_LIVES: Int = 6
+
+        /** UI countdown window — when the bar hits 0 the user should reapply. */
+        val REAPPLY_HINT_DURATION: Duration = 2.hours
+
+        /** Sub-slice resolution for the integrator. 5 min keeps the trapezoid error < 0.5 %. */
+        val SAMPLING_STEP: Duration = 5.minutes
+
+        private const val LN_2: Double = 0.6931471805599453
     }
 }

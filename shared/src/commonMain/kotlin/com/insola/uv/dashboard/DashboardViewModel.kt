@@ -114,7 +114,7 @@ class DashboardViewModel(
      */
     fun applySunscreen(spf: Spf) {
         if (spf == Spf.Off) return
-        val patch = AttenuationTimeline.Patch(appliedAt = currentNow(), transmittance = spf.transmittance)
+        val patch = AttenuationTimeline.Patch(appliedAt = currentNow(), labelTransmittance = spf.transmittance)
         attenuationFlow.value = attenuationFlow.value + patch
     }
 

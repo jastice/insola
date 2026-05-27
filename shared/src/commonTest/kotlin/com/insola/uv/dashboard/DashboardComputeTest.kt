@@ -264,7 +264,8 @@ class DashboardComputeTest {
         // Default = Off; user applies SPF 50 right now. The forward burn integrator must
         // pick up the application's transmittance instead of the bare default. A short
         // session at hour 10 leaves room before MED on a Berlin-strength curve so the
-        // *forward* projection is non-trivial.
+        // *forward* projection is non-trivial. `applicationThickness = 1.0` isolates the
+        // override behavior from the realistic thickness derate (covered separately).
         val scenario = Fixtures.byId("berlin")
         val session = OutdoorSession(
             start = scenario.dayStart + 10.hours,
@@ -275,7 +276,7 @@ class DashboardComputeTest {
         val boosted = DashboardCompute.compute(
             scenario, 11.0, SkinProfile(SkinSensitivity.III), listOf(session),
             attenuation = AttenuationTimeline(listOf(
-                AttenuationTimeline.Patch(now, Spf.Spf50.transmittance),
+                AttenuationTimeline.Patch(now, Spf.Spf50.transmittance, applicationThickness = 1.0),
             )),
         )
         // Past dose unchanged — the application doesn't retroactively undo accumulation.
@@ -298,7 +299,9 @@ class DashboardComputeTest {
         // Berlin scenario, two-hour session 10:00–12:00, "now" is 12:00. Applying SPF 50 at the
         // halfway point (11:00) must:
         //   1. leave the first hour's dose untouched (no retroactive undo)
-        //   2. attenuate the second hour by 1/50 → accumulated burn meter drops noticeably
+        //   2. attenuate the second hour by ~1/50 → accumulated burn meter drops noticeably
+        // `applicationThickness = 1.0` keeps the labeled SPF effective so the ~½ ratio bounds
+        // below are tight; realistic thickness derates are covered in a dedicated test.
         val scenario = Fixtures.byId("berlin")
         val session = OutdoorSession(
             start = scenario.dayStart + 10.hours,
@@ -306,7 +309,8 @@ class DashboardComputeTest {
         )
         val appliedHalfway = AttenuationTimeline.Patch(
             appliedAt = scenario.dayStart + 11.hours,
-            transmittance = Spf.Spf50.transmittance,
+            labelTransmittance = Spf.Spf50.transmittance,
+            applicationThickness = 1.0,
         )
 
         val bare = DashboardCompute.compute(
@@ -339,20 +343,23 @@ class DashboardComputeTest {
     @Test
     fun reapply_doesNotStripCoverageFromPreviouslyCoveredMoments() {
         // The "fill-the-burn-budget" regression: previously the latest application replaced any
-        // earlier one in storage, so re-applying at 15:00 retroactively un-protected the 14–15
-        // hour that the 14:00 application had covered. The integrator now takes the strongest
-        // SPF active at each instant across *all* applications, so coverage can only extend.
+        // earlier one in storage, so re-applying at 15:30 retroactively un-protected the
+        // 14:00–15:30 window that the 14:00 application had covered. The integrator now takes
+        // the strongest patch active at each instant across *all* applications, so coverage
+        // can only extend. Re-apply lands exactly at session end, so the two runs must
+        // integrate identically over the session window (reApply contributes nothing inside).
         val scenario = Fixtures.byId("berlin")
         val session = OutdoorSession(
             start = scenario.dayStart + 14.hours,
             end = scenario.dayStart + 15.hours + 30.minutes,
         )
         val firstApply = AttenuationTimeline.Patch(
-            appliedAt = scenario.dayStart + 14.hours, transmittance = Spf.Spf50.transmittance,
+            appliedAt = scenario.dayStart + 14.hours,
+            labelTransmittance = Spf.Spf50.transmittance,
         )
         val reApply = AttenuationTimeline.Patch(
             appliedAt = scenario.dayStart + 15.hours + 30.minutes,
-            transmittance = Spf.Spf50.transmittance,
+            labelTransmittance = Spf.Spf50.transmittance,
         )
 
         val onlyFirst = DashboardCompute.compute(
@@ -363,16 +370,16 @@ class DashboardComputeTest {
             scenario, 15.5, SkinProfile(SkinSensitivity.III), listOf(session),
             attenuation = AttenuationTimeline(listOf(firstApply, reApply)),
         )
-        // Both runs cover the entire session window — first apply spans 14:00–16:00, reapply
-        // adds 15:30–17:30. Burn-meter % must therefore be identical (and tiny). Before the
-        // fix, the reapply branch jumped to ~50× higher because the 14–15:30 window lost cover.
         assertEquals(onlyFirst.accumulatedDose, afterReapply.accumulatedDose, 1e-9)
         assertEquals(onlyFirst.budgetPercent, afterReapply.budgetPercent, 1e-9)
     }
 
     @Test
-    fun expiredApplication_fallsBackToDefault() {
-        // Application 3 hours old → past the 2h window → effective SPF reverts to the default.
+    fun decayedApplication_fallsBackToDefault() {
+        // Application 3 h old. With default thickness 0.5 and half-life 2 h, SPF 50 has
+        // decayed to roughly SPF 3 — far weaker than the always-on default SPF 15. The
+        // integrator's min composition therefore picks the default, exactly as for an
+        // "expired" application under the old step model.
         val scenario = Fixtures.byId("equator")
         val now = scenario.hourToInstant(13.0)
         val appliedLongAgo = AttenuationTimeline.Patch(now - 3.hours, Spf.Spf50.transmittance)
@@ -388,7 +395,7 @@ class DashboardComputeTest {
     @Test
     fun applicationWeakerThanDefault_doesNotDowngrade() {
         // Default SPF 50; user fiddles with the chip and presses Apply at SPF 15. Effective
-        // must remain SPF 50 — the rule is `max(default, applied-if-fresh)`.
+        // must remain SPF 50 — the rule is `min(defaultTransmittance, patchTransmittance)`.
         val scenario = Fixtures.byId("equator")
         val now = scenario.hourToInstant(13.0)
         val s = DashboardCompute.compute(
@@ -400,6 +407,65 @@ class DashboardComputeTest {
             )),
         )
         assertEquals(Spf.Spf50.transmittance, s.effectiveTransmittance, 1e-12)
+    }
+
+    @Test
+    fun realisticApplicationThickness_deratesLabeledSpf() {
+        // Default thickness 0.5 (Petersen & Wulf 2014 field median): labeled SPF 50 should
+        // deliver effective SPF ≈ √50 ≈ 7.07 at the moment of application, *not* the labeled
+        // 1/50 transmittance the bottle promises.
+        val scenario = Fixtures.byId("equator")
+        val now = scenario.hourToInstant(13.0)
+        val s = DashboardCompute.compute(
+            scenario, 13.0,
+            SkinProfile(SkinSensitivity.III),
+            sessions = emptyList(),
+            attenuation = AttenuationTimeline(listOf(
+                AttenuationTimeline.Patch(now, Spf.Spf50.transmittance),
+            )),
+        )
+        val expectedInitialSpf = kotlin.math.sqrt(50.0)
+        assertEquals(1.0 / expectedInitialSpf, s.effectiveTransmittance, 1e-9)
+    }
+
+    @Test
+    fun exponentialDecay_transmittanceGrowsMonotonicallyWithElapsedTime() {
+        // The whole point of swapping the step model for exponential decay: protection
+        // gradually fades rather than cliffing off at 2 h. Sampled across the modelling
+        // horizon, transmittance must be strictly increasing (toward 1.0 = bare).
+        val scenario = Fixtures.byId("equator")
+        val applied = scenario.hourToInstant(10.0)
+        val patch = AttenuationTimeline.Patch(applied, Spf.Spf50.transmittance, applicationThickness = 1.0)
+        val samples = listOf(0.0, 0.5, 1.0, 2.0, 4.0, 8.0).map { dt ->
+            patch.transmittanceAt(applied + dt.hours)
+        }
+        samples.zipWithNext().forEach { (a, b) ->
+            assertTrue(b > a, "transmittance must grow with elapsed time: $a → $b")
+        }
+        assertTrue(samples.first() < 0.03, "fresh SPF 50 (thickness=1) transmits ≈ 1/50")
+        // At 2 half-lives the excess factor (S − 1) has dropped to ¼ — for SPF 50 that's an
+        // effective ≈ SPF 13. The "reapply soon" advice kicks in well before the curve flattens.
+        assertEquals(2.0, patch.effectiveHalfLifeHours, 1e-12)
+        assertTrue(samples.last() > samples.first() * 10, "after 8 h transmittance ≫ initial")
+    }
+
+    @Test
+    fun wearMultiplier_acceleratesDecay() {
+        // Water immersion / heavy sweat roughly halves the half-life (Stokes & Diffey 1999).
+        // At equal elapsed time, the wet patch must transmit more UV than the dry one.
+        val scenario = Fixtures.byId("equator")
+        val applied = scenario.hourToInstant(10.0)
+        val dry = AttenuationTimeline.Patch(
+            applied, Spf.Spf50.transmittance, applicationThickness = 1.0, wearMultiplier = 1.0,
+        )
+        val wet = AttenuationTimeline.Patch(
+            applied, Spf.Spf50.transmittance, applicationThickness = 1.0, wearMultiplier = 0.5,
+        )
+        val t = applied + 1.hours
+        assertTrue(
+            wet.transmittanceAt(t) > dry.transmittanceAt(t),
+            "wet patch should have decayed further by t=1h (dry=${dry.transmittanceAt(t)}, wet=${wet.transmittanceAt(t)})",
+        )
     }
 
     @Test
