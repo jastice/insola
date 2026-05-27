@@ -1,6 +1,6 @@
 package com.insola.uv.dose
 
-import com.insola.uv.domain.SkinSensitivity
+import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.UvForecast
 import com.insola.uv.domain.UvSample
 import com.insola.uv.domain.lerp
@@ -20,20 +20,22 @@ object BurnModel {
 
     /**
      * Forward-integrates from [now] over the [forecast]; returns the duration after which the
-     * accumulated dose crosses [thresholdMultiplier] × the MED threshold for [sensitivity],
+     * accumulated dose crosses [thresholdMultiplier] × the effective MED for [profile],
      * assuming continuous [assumedFactor] exposure. Pass `1.0` for first reddening (one MED),
-     * `2.0` for the "felt sunburn" line. Returns null if the threshold is never crossed within
-     * the forecast.
+     * `2.0` for the "felt sunburn" line. The effective MED already folds in the user's
+     * acclimatization (tan) multiplier; pure phototype baseline can be passed via
+     * `SkinProfile(phototype)` with the default `Acclimatization.None`. Returns null if the
+     * threshold is never crossed within the forecast.
      */
     fun timeToThreshold(
         now: Instant,
         forecast: UvForecast,
-        sensitivity: SkinSensitivity,
+        profile: SkinProfile,
         assumedFactor: Double,
         alreadyAccumulated: Double = 0.0,
         thresholdMultiplier: Double = 1.0,
     ): Duration? {
-        val threshold = sensitivity.medThresholdUvIndexHours * thresholdMultiplier
+        val threshold = profile.effectiveMedUvIndexHours * thresholdMultiplier
         if (assumedFactor <= 0.0) return null
         if (alreadyAccumulated >= threshold) return Duration.ZERO
         if (forecast.samples.size < 2) return null

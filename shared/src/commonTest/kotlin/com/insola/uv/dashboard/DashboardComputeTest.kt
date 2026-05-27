@@ -2,7 +2,9 @@ package com.insola.uv.dashboard
 
 import com.insola.uv.dev.Fixtures
 import com.insola.uv.dev.Scenario
+import com.insola.uv.domain.Acclimatization
 import com.insola.uv.domain.OutdoorSession
+import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.dose.VitaminDModel
 import kotlin.test.Test
@@ -25,13 +27,14 @@ class DashboardComputeTest {
         scenarioId: String,
         hour: Double,
         skin: SkinSensitivity,
+        acclimatization: Acclimatization = Acclimatization.None,
         sessions: List<OutdoorSession>? = null,
     ): DashboardState {
         val scenario = Fixtures.byId(scenarioId)
         return DashboardCompute.compute(
             scenario = scenario,
             hourOfDay = hour,
-            sensitivity = skin,
+            profile = SkinProfile(skin, acclimatization),
             sessions = sessions ?: listOf(fullDaySession(scenario)),
         )
     }
@@ -70,7 +73,7 @@ class DashboardComputeTest {
             DashboardCompute.compute(
                 scenario = scenario,
                 hourOfDay = hour.toDouble(),
-                sensitivity = SkinSensitivity.III,
+                profile = SkinProfile(SkinSensitivity.III),
                 sessions = listOf(session),
             ).accumulatedDose
         }
@@ -112,6 +115,34 @@ class DashboardComputeTest {
     }
 
     @Test
+    fun acclimatization_stretchesBurnBudget_andAttenuatesVitDYieldSymmetrically() {
+        // Same scenario + same logged exposure, two profiles differing only in tan state.
+        // Burn budget% must scale by the inverse of the acclimatization factor (effective MED
+        // grows, accumulated stays put). Raw vit-D score is also unchanged — tan attenuation
+        // is applied at bucket time via [VitaminDModel.effectiveYield], not by re-integrating.
+        val untanned = stateAt("berlin", hour = 14.0, skin = SkinSensitivity.III)
+        val tanned = stateAt(
+            "berlin", hour = 14.0, skin = SkinSensitivity.III, acclimatization = Acclimatization.Moderate,
+        )
+        assertEquals(untanned.accumulatedDose, tanned.accumulatedDose, 1e-9)
+        assertTrue(
+            untanned.budgetPercent > tanned.budgetPercent * 2.0,
+            "Moderate tan (×2.2) should drop budget% by roughly the same factor " +
+                "(untanned=${untanned.budgetPercent}%, tanned=${tanned.budgetPercent}%)",
+        )
+        // Raw vit-D score is identical (integrator doesn't see the profile)…
+        assertEquals(untanned.vitaminDScore, tanned.vitaminDScore, 1e-9)
+        // …but tanned skin yields fewer effective UV-D photons per unit raw score, so a
+        // bucket move can never go *upward*. The relationship is monotonic: tanned ≤ untanned.
+        assertTrue(
+            tanned.vitaminDBucket <= untanned.vitaminDBucket,
+            "tan should attenuate (or not move) the vit-D bucket, never improve it " +
+                "(untanned=${untanned.vitaminDBucket}, tanned=${tanned.vitaminDBucket})",
+        )
+    }
+
+
+    @Test
     fun emptyLog_meansNoAccumulatedDose_andNoVitD() {
         val s = stateAt("equator", hour = 18.0, skin = SkinSensitivity.III, sessions = emptyList())
         assertEquals(0.0, s.accumulatedDose, 1e-9, "no logged outdoor time → no dose")
@@ -132,7 +163,7 @@ class DashboardComputeTest {
         val s = DashboardCompute.compute(
             scenario = scenario,
             hourOfDay = 12.0,
-            sensitivity = SkinSensitivity.III,
+            profile = SkinProfile(SkinSensitivity.III),
             sessions = listOf(openAt10),
         )
         assertTrue(s.isCurrentlyOutside, "should be flagged as outside while session is open")
@@ -143,7 +174,7 @@ class DashboardComputeTest {
         val sClosed = DashboardCompute.compute(
             scenario = scenario,
             hourOfDay = 12.0,
-            sensitivity = SkinSensitivity.III,
+            profile = SkinProfile(SkinSensitivity.III),
             sessions = listOf(closed),
         )
         assertEquals(
@@ -164,8 +195,8 @@ class DashboardComputeTest {
             start = scenario.dayStart + 9.hours,
             end = scenario.dayStart + 13.hours,
         )
-        val shortState = DashboardCompute.compute(scenario, 23.0, SkinSensitivity.III, listOf(short))
-        val longState = DashboardCompute.compute(scenario, 23.0, SkinSensitivity.III, listOf(long))
+        val shortState = DashboardCompute.compute(scenario, 23.0, SkinProfile(SkinSensitivity.III), listOf(short))
+        val longState = DashboardCompute.compute(scenario, 23.0, SkinProfile(SkinSensitivity.III), listOf(long))
         assertTrue(
             longState.accumulatedDose > shortState.accumulatedDose,
             "4h session should accumulate more than 1h session " +
@@ -181,7 +212,7 @@ class DashboardComputeTest {
             start = scenario.dayStart + 14.hours,
             end = scenario.dayStart + 16.hours,
         )
-        val s = DashboardCompute.compute(scenario, 10.0, SkinSensitivity.III, listOf(future))
+        val s = DashboardCompute.compute(scenario, 10.0, SkinProfile(SkinSensitivity.III), listOf(future))
         assertEquals(0.0, s.accumulatedDose, 1e-9, "a session in the future should not have contributed yet")
         assertTrue(!s.isCurrentlyOutside)
     }

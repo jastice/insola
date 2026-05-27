@@ -2,7 +2,7 @@ package com.insola.uv.dose
 
 import com.insola.uv.domain.ExposureInterval
 import com.insola.uv.domain.GeoPoint
-import com.insola.uv.domain.SkinSensitivity
+import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.UvForecast
 import com.insola.uv.domain.UvSample
 import com.insola.uv.domain.lerp
@@ -39,7 +39,7 @@ import kotlin.math.cos
  */
 object VitaminDModel {
 
-    enum class Bucket { None, Trace, Low, Adequate, Likely }
+    enum class Bucket { None, Trace, Low, Adequate, Sufficient }
 
     fun accumulate(
         forecast: UvForecast,
@@ -61,31 +61,49 @@ object VitaminDModel {
         accumulate(forecast, i.start, i.end, skinExposedFraction * i.exposureFactor)
     }
 
-    fun bucket(score: Double, sensitivity: SkinSensitivity): Bucket {
+    /**
+     * Yield-adjusted score: the fraction of raw exposure that actually produces previtamin
+     * D3 once melanin attenuation is accounted for. Tanned (and naturally pigmented) skin's
+     * 7-dehydrocholesterol competes with melanin for UV-B photons, so vit-D synthesis per
+     * unit UV drops in rough proportion to the acclimatization photoprotection factor
+     * (Webb 2010, Bogh 2010). Phototype-level pigmentation is *not* applied here because
+     * the bucket compares against an SDD anchored to baseline phototype MED, which already
+     * scales with constitutive melanin.
+     */
+    fun effectiveYield(rawScore: Double, profile: SkinProfile): Double =
+        rawScore / profile.effectiveAcclimatizationFactor
+
+    fun bucket(score: Double, profile: SkinProfile): Bucket {
         // Holick's rule: 1 SDD (~1000 IU) ≈ ¼ MED of erythemal exposure on ¼ of the body
         // surface. The 25% body fraction is already folded into the [skinExposedFraction]
         // passed to [accumulate], so the SDD expressed in our vit-D-weighted score units
         // is ¼ × ¼ = ¹⁄₁₆ of an MED at R≈1 (mid-elevation sun). Higher-angle sun produces
-        // proportionally more vit-D per unit time — R > 1 pushes the user into Likely
+        // proportionally more vit-D per unit time — R > 1 pushes the user into Sufficient
         // sooner than into MED, which matches reality (vit-D saturates well before burn).
-        val sdd = sensitivity.medThresholdUvIndexHours / 16.0
+        //
+        // SDD threshold uses *baseline* phototype MED — Holick's calibration is anchored
+        // there. Acclimatization (tan) is applied as melanin attenuation on the score via
+        // [effectiveYield]; the two corrections compose symmetrically with the burn-side
+        // multiplier (tan extends burn budget AND extends time-to-Adequate).
+        val effective = effectiveYield(score, profile)
+        val sdd = profile.phototype.medThresholdUvIndexHours / 16.0
         return when {
-            score <= 0.0        -> Bucket.None
-            score < 0.25 * sdd  -> Bucket.Trace     // < ¼ SDD
-            score < 0.5 * sdd   -> Bucket.Low       // ¼ – ½ SDD
-            score < sdd         -> Bucket.Adequate  // ½ – 1 SDD
-            else                -> Bucket.Likely    // ≥ 1 SDD
+            effective <= 0.0        -> Bucket.None
+            effective < 0.25 * sdd  -> Bucket.Trace     // < ¼ SDD
+            effective < 0.5 * sdd   -> Bucket.Low       // ¼ – ½ SDD
+            effective < sdd         -> Bucket.Adequate  // ½ – 1 SDD
+            else                    -> Bucket.Sufficient    // ≥ 1 SDD
         }
     }
 
     fun bucketForIntervals(
         forecast: UvForecast,
         intervals: List<ExposureInterval>,
-        sensitivity: SkinSensitivity,
+        profile: SkinProfile,
         skinExposedFraction: Double,
     ): Bucket = bucket(
         accumulateOverIntervals(forecast, intervals, skinExposedFraction),
-        sensitivity,
+        profile,
     )
 
     /**

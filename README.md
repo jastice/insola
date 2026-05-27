@@ -47,3 +47,7 @@ The `iosApp/` directory currently contains only `iOSApp.swift`. Generate the Xco
 - Add Ktor + a UV API client (e.g. open-meteo) under `commonMain`.
 - Add Navigation Compose Multiplatform when a second screen is needed.
 - Add SQLDelight or Room when persistence is needed.
+
+## License
+
+Source-available under [PolyForm Strict 1.0.0](LICENSE). Not open source — see [NOTICE](NOTICE) for distribution and contribution terms.

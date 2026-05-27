@@ -15,11 +15,11 @@ internal val OutdoorGreen = Color(0xFF34A853)
 internal val IndoorGray = Color(0xFF9E9E9E)
 
 // Vitamin-D bucket colors. Trace = neutral gray, Low = amber building, Adequate = healthy green,
-// Likely = saturated deep green.
+// Sufficient = saturated deep green.
 internal val VitDTrace = Color(0xFFBDBDBD)
 internal val VitDLow = Color(0xFFFFB300)
 internal val VitDAdequate = Color(0xFF66BB6A)
-internal val VitDLikely = Color(0xFF2E7D32)
+internal val VitDSufficient = Color(0xFF2E7D32)
 
 /** UV-index band color, matching the WHO/EPA scale. */
 internal fun uvBandColor(uv: Double): Color = when {
@@ -45,5 +45,5 @@ internal fun VitaminDModel.Bucket.color(): Color = when (this) {
     VitaminDModel.Bucket.Trace -> VitDTrace
     VitaminDModel.Bucket.Low -> VitDLow
     VitaminDModel.Bucket.Adequate -> VitDAdequate
-    VitaminDModel.Bucket.Likely -> VitDLikely
+    VitaminDModel.Bucket.Sufficient -> VitDSufficient
 }

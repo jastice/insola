@@ -4,7 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.insola.uv.dev.Fixtures
 import com.insola.uv.dev.Scenario
+import com.insola.uv.domain.Acclimatization
 import com.insola.uv.domain.OutdoorSession
+import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.dose.BurnTier
 import com.insola.uv.dose.VitaminDModel
@@ -23,7 +25,8 @@ data class DashboardState(
     val scenario: Scenario,
     val hourOfDay: Double,
     val now: Instant,
-    val sensitivity: SkinSensitivity,
+    val profile: SkinProfile,
+    val skinSummary: SkinSummary,
     val currentUv: Double,
     val solarElevationDeg: Double,
     val sunriseHour: Double?,
@@ -46,21 +49,21 @@ class DashboardViewModel(
 
     private val scenarioIdFlow = MutableStateFlow(initialScenarioId)
     private val hourFlow = MutableStateFlow(wallClockHourOfDay())
-    private val sensitivityFlow = MutableStateFlow(SkinSensitivity.Default)
+    private val profileFlow = MutableStateFlow(SkinProfile.Default)
     private val sessionsFlow = MutableStateFlow<List<OutdoorSession>>(emptyList())
 
     val scenarios: List<Scenario> = Fixtures.all
 
     val state: StateFlow<DashboardState> =
-        combine(scenarioIdFlow, hourFlow, sensitivityFlow, sessionsFlow) { id, hour, skin, sessions ->
-            DashboardCompute.compute(Fixtures.byId(id), hour, skin, sessions)
+        combine(scenarioIdFlow, hourFlow, profileFlow, sessionsFlow) { id, hour, profile, sessions ->
+            DashboardCompute.compute(Fixtures.byId(id), hour, profile, sessions)
         }.stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
             initialValue = DashboardCompute.compute(
                 Fixtures.byId(initialScenarioId),
                 hourFlow.value,
-                sensitivityFlow.value,
+                profileFlow.value,
                 sessionsFlow.value,
             ),
         )
@@ -77,8 +80,12 @@ class DashboardViewModel(
         hourFlow.value = hour.coerceIn(0.0, 24.0)
     }
 
-    fun setSensitivity(s: SkinSensitivity) {
-        sensitivityFlow.value = s
+    fun setPhototype(p: SkinSensitivity) {
+        profileFlow.value = profileFlow.value.copy(phototype = p)
+    }
+
+    fun setAcclimatization(a: Acclimatization) {
+        profileFlow.value = profileFlow.value.copy(acclimatization = a)
     }
 
     /**

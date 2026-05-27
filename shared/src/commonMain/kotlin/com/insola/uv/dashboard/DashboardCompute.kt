@@ -2,7 +2,7 @@ package com.insola.uv.dashboard
 
 import com.insola.uv.dev.Scenario
 import com.insola.uv.domain.OutdoorSession
-import com.insola.uv.domain.SkinSensitivity
+import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.uvAt
 import com.insola.uv.dose.BurnModel
 import com.insola.uv.dose.BurnTier
@@ -23,7 +23,7 @@ object DashboardCompute {
     fun compute(
         scenario: Scenario,
         hourOfDay: Double,
-        sensitivity: SkinSensitivity,
+        profile: SkinProfile,
         sessions: List<OutdoorSession> = emptyList(),
     ): DashboardState {
         val now = scenario.hourToInstant(hourOfDay)
@@ -41,13 +41,13 @@ object DashboardCompute {
         val daylight = SolarGeometry.daylightWindow(scenario.location, scenario.dayStart)
 
         val accumulated = DoseIntegrator.integrateOverIntervals(forecast, effectiveIntervals)
-        val medThreshold = sensitivity.medThresholdUvIndexHours
+        val medThreshold = profile.effectiveMedUvIndexHours
         val budgetPercent = accumulated / medThreshold * 100.0
         val burnTier = BurnTier.forFractionOfMed(accumulated / medThreshold)
         val timeToFirstReddening = BurnModel.timeToThreshold(
             now = now,
             forecast = forecast,
-            sensitivity = sensitivity,
+            profile = profile,
             assumedFactor = 1.0,
             alreadyAccumulated = accumulated,
             thresholdMultiplier = 1.0,
@@ -55,7 +55,7 @@ object DashboardCompute {
         val timeToSunburn = BurnModel.timeToThreshold(
             now = now,
             forecast = forecast,
-            sensitivity = sensitivity,
+            profile = profile,
             assumedFactor = 1.0,
             alreadyAccumulated = accumulated,
             thresholdMultiplier = 2.0,
@@ -65,13 +65,15 @@ object DashboardCompute {
             intervals = effectiveIntervals,
             skinExposedFraction = 0.25,
         )
-        val vitDBucket = VitaminDModel.bucket(vitDScore, sensitivity)
+        val vitDBucket = VitaminDModel.bucket(vitDScore, profile)
+        val skinSummary = SkinSummary.compute(scenario, profile)
         val isCurrentlyOutside = sessions.lastOrNull()?.let { it.isOpen && it.start <= now } == true
         return DashboardState(
             scenario = scenario,
             hourOfDay = hourOfDay,
             now = now,
-            sensitivity = sensitivity,
+            profile = profile,
+            skinSummary = skinSummary,
             currentUv = currentUv,
             solarElevationDeg = elevation,
             sunriseHour = daylight.sunriseHour,

@@ -45,5 +45,5 @@ internal fun vitaminDLabel(bucket: VitaminDModel.Bucket): String = when (bucket)
     VitaminDModel.Bucket.Trace -> "Trace"
     VitaminDModel.Bucket.Low -> "Low"
     VitaminDModel.Bucket.Adequate -> "Adequate"
-    VitaminDModel.Bucket.Likely -> "Likely sufficient"
+    VitaminDModel.Bucket.Sufficient -> "Sufficient"
 }

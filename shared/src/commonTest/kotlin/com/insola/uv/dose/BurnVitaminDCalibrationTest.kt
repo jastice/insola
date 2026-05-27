@@ -2,6 +2,7 @@ package com.insola.uv.dose
 
 import com.insola.uv.dev.Fixtures
 import com.insola.uv.dev.Scenario
+import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.solar.SolarGeometry
 import kotlinx.datetime.Instant
@@ -28,14 +29,14 @@ class BurnVitaminDCalibrationTest {
 
     @Test
     fun vitaminDReachesAdequateByTheTimeBurnReachesOneMED() {
-        val sensitivity = SkinSensitivity.III
+        val profile = SkinProfile(SkinSensitivity.III)
         listOf("equator", "berlin", "cloudy").forEach { id ->
             val scenario = Fixtures.byId(id)
             val noon = solarNoonInstant(scenario)
             val ttb = BurnModel.timeToThreshold(
                 now = noon,
                 forecast = scenario.forecast,
-                sensitivity = sensitivity,
+                profile = profile,
                 assumedFactor = 1.0,
             )
             assertNotNull(ttb, "$id: should reach 1 MED with continuous exposure from solar noon")
@@ -46,7 +47,7 @@ class BurnVitaminDCalibrationTest {
                 to = noon + ttb,
                 skinExposedFraction = 0.25,
             )
-            val bucket = VitaminDModel.bucket(score, sensitivity)
+            val bucket = VitaminDModel.bucket(score, profile)
             assertTrue(
                 bucket >= VitaminDModel.Bucket.Adequate,
                 "$id: vit-D should reach at least Adequate by time burn hits 1 MED, " +
