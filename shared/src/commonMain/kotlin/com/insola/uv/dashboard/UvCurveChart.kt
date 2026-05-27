@@ -31,23 +31,35 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import com.insola.uv.dev.Scenario
 import com.insola.uv.domain.OutdoorSession
-import kotlinx.datetime.Instant
 import kotlin.math.ceil
 import kotlin.math.max
-
-// WHO / EPA UV index band colors.
-internal val UvGreen = Color(0xFF299501)
-internal val UvYellow = Color(0xFFF7E400)
-internal val UvOrange = Color(0xFFF95901)
-internal val UvRed = Color(0xFFD8001D)
-internal val UvPurple = Color(0xFF6B49C8)
-
-internal val OutdoorGreen = Color(0xFF34A853)
-internal val IndoorGray = Color(0xFF9E9E9E)
 
 private val ChartLeftPad = 30.dp
 private val ChartHeight = 160.dp
 private val TimelineHeight = 14.dp
+
+/** Shared horizontal-axis mapping for the chart and the timeline strip. */
+private class ChartCoords(val leftPad: Float, val totalWidth: Float) {
+    val plotWidth: Float get() = (totalWidth - leftPad).coerceAtLeast(1f)
+    fun hourToX(hour: Double): Float =
+        leftPad + (hour.coerceIn(0.0, 24.0) / 24.0).toFloat() * plotWidth
+    fun xToHour(x: Float): Double =
+        ((x - leftPad) / plotWidth * 24.0).coerceIn(0.0, 24.0)
+}
+
+/** Tap-or-drag-to-scrub gesture, shared by the chart and timeline. */
+private fun Modifier.scrubHour(onHourChange: (Double) -> Unit): Modifier = pointerInput(Unit) {
+    val leftPad = ChartLeftPad.toPx()
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val coords = ChartCoords(leftPad, size.width.toFloat())
+        onHourChange(coords.xToHour(down.position.x))
+        drag(down.id) { change ->
+            onHourChange(coords.xToHour(change.position.x))
+            change.consume()
+        }
+    }
+}
 
 /**
  * 24-hour UV projection + outdoor timeline + interactive time scrubber.
@@ -88,37 +100,22 @@ fun UvCurveChart(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(ChartHeight)
-                .pointerInput(Unit) {
-                    val leftPad = ChartLeftPad.toPx()
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val plotW = (size.width - leftPad).coerceAtLeast(1f)
-                        fun hourOf(x: Float) =
-                            ((x - leftPad) / plotW * 24.0).coerceIn(0.0, 24.0)
-                        onHourChange(hourOf(down.position.x))
-                        drag(down.id) { change ->
-                            onHourChange(hourOf(change.position.x))
-                            change.consume()
-                        }
-                    }
-                },
+                .scrubHour(onHourChange),
         ) {
-            val leftPad = ChartLeftPad.toPx()
-            val plotW = size.width - leftPad
+            val coords = ChartCoords(ChartLeftPad.toPx(), size.width)
             val h = size.height
-            val xFor: (Double) -> Float = { hour -> leftPad + (hour / 24.0).toFloat() * plotW }
             val yFor: (Double) -> Float = { uv -> h - (uv / yMax).toFloat() * h }
 
             // Night bands (before sunrise / after sunset). Polar night = fully shaded plot;
             // polar day = no shading.
-            drawNightBands(leftPad, plotW, h, sunriseHour, sunsetHour, nightShade)
+            drawNightBands(coords, h, sunriseHour, sunsetHour, nightShade)
 
             // Y-axis tick lines + labels.
             ticks.forEach { uv ->
                 val y = yFor(uv)
                 drawLine(
                     color = axisColor.copy(alpha = 0.5f),
-                    start = Offset(leftPad, y),
+                    start = Offset(coords.leftPad, y),
                     end = Offset(size.width, y),
                     strokeWidth = 1f,
                 )
@@ -126,42 +123,32 @@ fun UvCurveChart(
                 drawText(
                     textLayoutResult = layout,
                     topLeft = Offset(
-                        x = leftPad - layout.size.width - 4f,
+                        x = coords.leftPad - layout.size.width - 4f,
                         y = y - layout.size.height / 2f,
                     ),
                 )
             }
 
             // Outdoor session bands behind the curve.
-            sessions.forEach { s ->
-                val startHour = hourOfScenario(scenario, s.start) ?: return@forEach
-                val endHour = s.end?.let { hourOfScenario(scenario, it) } ?: hourOfDay
-                val x0 = xFor(startHour.coerceIn(0.0, 24.0))
-                val x1 = xFor(endHour.coerceIn(0.0, 24.0))
-                if (x1 > x0) {
-                    drawRect(
-                        color = sessionBandColor,
-                        topLeft = Offset(x0, 0f),
-                        size = Size(x1 - x0, h),
-                    )
-                }
-            }
+            drawSessionBands(coords, h, scenario, sessions, hourOfDay, sessionBandColor)
 
             // Baseline.
-            drawLine(axisColor, Offset(leftPad, h), Offset(size.width, h), strokeWidth = 1f)
+            drawLine(axisColor, Offset(coords.leftPad, h), Offset(size.width, h), strokeWidth = 1f)
 
             // Filled area + outline, both painted with the UV-band gradient brush.
             val area = Path().apply {
-                moveTo(leftPad, h)
-                scenario.hourlyUv.forEachIndexed { i, uv -> lineTo(xFor(i.toDouble()), yFor(uv)) }
-                lineTo(leftPad + plotW, h)
+                moveTo(coords.leftPad, h)
+                scenario.hourlyUv.forEachIndexed { i, uv ->
+                    lineTo(coords.hourToX(i.toDouble()), yFor(uv))
+                }
+                lineTo(coords.leftPad + coords.plotWidth, h)
                 close()
             }
             drawPath(area, brush = gradient, alpha = 0.45f)
 
             val outline = Path().apply {
                 scenario.hourlyUv.forEachIndexed { i, uv ->
-                    val x = xFor(i.toDouble())
+                    val x = coords.hourToX(i.toDouble())
                     val y = yFor(uv)
                     if (i == 0) moveTo(x, y) else lineTo(x, y)
                 }
@@ -169,7 +156,7 @@ fun UvCurveChart(
             drawPath(outline, brush = gradient, style = Stroke(width = 2.5f))
 
             // "Now" marker.
-            val nowX = xFor(hourOfDay.coerceIn(0.0, 24.0))
+            val nowX = coords.hourToX(hourOfDay)
             drawLine(nowColor, Offset(nowX, 0f), Offset(nowX, h), strokeWidth = 2f)
             drawCircle(uvBandColor(currentUv), radius = 5f, center = Offset(nowX, yFor(currentUv)))
         }
@@ -199,40 +186,18 @@ fun UvCurveChart(
         modifier = Modifier
             .fillMaxWidth()
             .height(TimelineHeight)
-            .pointerInput(Unit) {
-                val leftPad = ChartLeftPad.toPx()
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    val plotW = (size.width - leftPad).coerceAtLeast(1f)
-                    fun hourOf(x: Float) =
-                        ((x - leftPad) / plotW * 24.0).coerceIn(0.0, 24.0)
-                    onHourChange(hourOf(down.position.x))
-                    drag(down.id) { change ->
-                        onHourChange(hourOf(change.position.x))
-                        change.consume()
-                    }
-                }
-            },
+            .scrubHour(onHourChange),
     ) {
-        val leftPad = ChartLeftPad.toPx()
-        val plotW = size.width - leftPad
+        val coords = ChartCoords(ChartLeftPad.toPx(), size.width)
         val h = size.height
         drawRect(
             color = IndoorGray.copy(alpha = 0.35f),
-            topLeft = Offset(leftPad, 0f),
-            size = Size(plotW, h),
+            topLeft = Offset(coords.leftPad, 0f),
+            size = Size(coords.plotWidth, h),
         )
-        drawNightBands(leftPad, plotW, h, sunriseHour, sunsetHour, nightShade)
-        sessions.forEach { s ->
-            val startHour = hourOfScenario(scenario, s.start) ?: return@forEach
-            val endHour = s.end?.let { hourOfScenario(scenario, it) } ?: hourOfDay
-            val x0 = leftPad + (startHour.coerceIn(0.0, 24.0) / 24.0).toFloat() * plotW
-            val x1 = leftPad + (endHour.coerceIn(0.0, 24.0) / 24.0).toFloat() * plotW
-            if (x1 > x0) {
-                drawRect(OutdoorGreen, topLeft = Offset(x0, 0f), size = Size(x1 - x0, h))
-            }
-        }
-        val nowX = leftPad + (hourOfDay.coerceIn(0.0, 24.0) / 24.0).toFloat() * plotW
+        drawNightBands(coords, h, sunriseHour, sunsetHour, nightShade)
+        drawSessionBands(coords, h, scenario, sessions, hourOfDay, OutdoorGreen)
+        val nowX = coords.hourToX(hourOfDay)
         drawLine(nowColor, Offset(nowX, 0f), Offset(nowX, h), strokeWidth = 2f)
     }
 
@@ -253,36 +218,42 @@ fun UvCurveChart(
  * polar day ⇒ `0.0` / `24.0` ⇒ no shading).
  */
 private fun DrawScope.drawNightBands(
-    leftPad: Float,
-    plotW: Float,
+    coords: ChartCoords,
     h: Float,
     sunriseHour: Double?,
     sunsetHour: Double?,
     color: Color,
 ) {
     if (sunriseHour == null && sunsetHour == null) {
-        drawRect(color = color, topLeft = Offset(leftPad, 0f), size = Size(plotW, h))
+        drawRect(color = color, topLeft = Offset(coords.leftPad, 0f), size = Size(coords.plotWidth, h))
         return
     }
-    fun x(hour: Double) = leftPad + (hour.coerceIn(0.0, 24.0) / 24.0).toFloat() * plotW
     sunriseHour?.takeIf { it > 0.0 }?.let { sr ->
-        val w = x(sr) - leftPad
-        if (w > 0f) drawRect(color = color, topLeft = Offset(leftPad, 0f), size = Size(w, h))
+        val w = coords.hourToX(sr) - coords.leftPad
+        if (w > 0f) drawRect(color = color, topLeft = Offset(coords.leftPad, 0f), size = Size(w, h))
     }
     sunsetHour?.takeIf { it < 24.0 }?.let { ss ->
-        val x0 = x(ss)
-        val w = leftPad + plotW - x0
+        val x0 = coords.hourToX(ss)
+        val w = coords.leftPad + coords.plotWidth - x0
         if (w > 0f) drawRect(color = color, topLeft = Offset(x0, 0f), size = Size(w, h))
     }
 }
 
-/** Returns the UV-index band color for a given UV value. */
-internal fun uvBandColor(uv: Double): Color = when {
-    uv < 3.0 -> UvGreen
-    uv < 6.0 -> UvYellow
-    uv < 8.0 -> UvOrange
-    uv < 11.0 -> UvRed
-    else -> UvPurple
+private fun DrawScope.drawSessionBands(
+    coords: ChartCoords,
+    h: Float,
+    scenario: Scenario,
+    sessions: List<OutdoorSession>,
+    hourOfDay: Double,
+    color: Color,
+) {
+    sessions.forEach { s ->
+        val startHour = scenario.instantToHour(s.start) ?: return@forEach
+        val endHour = s.end?.let { scenario.instantToHour(it) } ?: hourOfDay
+        val x0 = coords.hourToX(startHour)
+        val x1 = coords.hourToX(endHour)
+        if (x1 > x0) drawRect(color, topLeft = Offset(x0, 0f), size = Size(x1 - x0, h))
+    }
 }
 
 /**
@@ -311,9 +282,3 @@ private fun buildUvGradient(yMax: Double): Brush {
 /** Y-axis ticks at the standard UV breakpoints that fit within [yMax]. */
 private fun uvTicks(yMax: Double): List<Double> =
     listOf(0.0, 3.0, 6.0, 8.0, 11.0).filter { it <= yMax }
-
-private fun hourOfScenario(scenario: Scenario, instant: Instant): Double? {
-    val ms = (instant - scenario.dayStart).inWholeMilliseconds
-    if (ms < 0) return null
-    return ms / 3_600_000.0
-}

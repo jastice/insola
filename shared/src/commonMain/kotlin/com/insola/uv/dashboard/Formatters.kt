@@ -1,5 +1,6 @@
 package com.insola.uv.dashboard
 
+import com.insola.uv.dose.VitaminDModel
 import kotlin.math.round
 import kotlin.time.Duration
 
@@ -20,8 +21,10 @@ internal fun formatNumber(value: Double, decimals: Int): String {
 }
 
 internal fun formatClock(hourOfDay: Double): String {
-    val totalMinutes = (hourOfDay * 60).toInt().coerceIn(0, 24 * 60)
-    val hh = (totalMinutes / 60).coerceAtMost(23)
+    // The scrubber clamps to 24.0; display end-of-day as 23:59 rather than rolling minutes into
+    // an out-of-band hour or showing a misleading "23:00".
+    val totalMinutes = (hourOfDay * 60).toInt().coerceIn(0, 24 * 60 - 1)
+    val hh = totalMinutes / 60
     val mm = totalMinutes % 60
     return hh.toString().padStart(2, '0') + ":" + mm.toString().padStart(2, '0')
 }
@@ -35,4 +38,12 @@ internal fun formatDuration(d: Duration): String {
         m == 0L -> "${h}h"
         else -> "${h}h ${m}m"
     }
+}
+
+internal fun vitaminDLabel(bucket: VitaminDModel.Bucket): String = when (bucket) {
+    VitaminDModel.Bucket.None -> "None"
+    VitaminDModel.Bucket.Trace -> "Trace"
+    VitaminDModel.Bucket.Low -> "Low"
+    VitaminDModel.Bucket.Adequate -> "Adequate"
+    VitaminDModel.Bucket.Likely -> "Likely sufficient"
 }

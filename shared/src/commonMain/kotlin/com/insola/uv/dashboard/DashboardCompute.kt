@@ -10,7 +10,6 @@ import com.insola.uv.dose.DoseIntegrator
 import com.insola.uv.dose.VitaminDModel
 import com.insola.uv.solar.SolarGeometry
 import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.minutes
 
 /**
  * Pure derivation of [DashboardState] from the user-controlled inputs. Kept out of the ViewModel
@@ -27,7 +26,7 @@ object DashboardCompute {
         sensitivity: SkinSensitivity,
         sessions: List<OutdoorSession> = emptyList(),
     ): DashboardState {
-        val now = scenario.dayStart + (hourOfDay * 60).minutes
+        val now = scenario.hourToInstant(hourOfDay)
         val forecast = scenario.forecast
         val currentUv = forecast.uvAt(now)
         val elevation = SolarGeometry.solarElevationDegrees(scenario.location, now)

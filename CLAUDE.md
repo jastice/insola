@@ -12,7 +12,7 @@ JAVA_HOME=/path/to/jdk-17 ./gradlew :shared:build
 JAVA_HOME=/path/to/jdk-17 ./gradlew build
 ```
 
-There are currently no tests; if/when added, use `./gradlew :shared:allTests` (KMP) or `:shared:testDebugUnitTest` / `:composeApp:testDebugUnitTest` (Android). Run a single test with `--tests "FQCN.method"`.
+Tests live in `shared/src/commonTest/` and run on the JVM via the Android unit-test target. Use `./gradlew :shared:testDebugUnitTest` (or `:shared:allTests` to include any other KMP targets that may get re-enabled later). Run a single test with `--tests "FQCN.method"`.
 
 ## Architecture
 

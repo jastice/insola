@@ -26,22 +26,6 @@ data class ExposureInterval(
     val confidence: Confidence = Confidence.Medium,
 )
 
-data class ManualExposureState(
-    val outdoors: Boolean = false,
-    val inShade: Boolean = false,
-    val sunscreenSpf: Int? = null,
-    val covered: Boolean = false,
-) {
-    fun toFactor(): Double {
-        if (!outdoors) return 0.0
-        var f = 1.0
-        if (inShade) f *= 0.3
-        if (covered) f *= 0.2
-        if (sunscreenSpf != null && sunscreenSpf > 0) f *= 1.0 / sunscreenSpf
-        return f
-    }
-}
-
 /**
  * Fitzpatrick skin phototypes I–VI.
  *

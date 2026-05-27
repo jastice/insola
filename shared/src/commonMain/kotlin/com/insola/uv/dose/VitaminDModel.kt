@@ -5,6 +5,7 @@ import com.insola.uv.domain.GeoPoint
 import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.domain.UvForecast
 import com.insola.uv.domain.UvSample
+import com.insola.uv.domain.lerp
 import com.insola.uv.solar.SolarGeometry
 import kotlinx.datetime.Instant
 import kotlin.math.PI
@@ -110,15 +111,8 @@ object VitaminDModel {
         if (segEnd <= segStart) return 0.0
         val mid = segStart + (segEnd - segStart) / 2
         val ratio = vitDRatio(SolarGeometry.solarElevationDegrees(location, mid))
-        val uvMid = interpolate(a.time, a.uvIndex, b.time, b.uvIndex, mid)
+        val uvMid = lerp(a.time, a.uvIndex, b.time, b.uvIndex, mid)
         val hours = (segEnd - segStart).inWholeMilliseconds / 3_600_000.0
         return uvMid * ratio * hours
-    }
-
-    private fun interpolate(t0: Instant, v0: Double, t1: Instant, v1: Double, at: Instant): Double {
-        if (t1 == t0) return v0
-        val span = (t1 - t0).inWholeMilliseconds.toDouble()
-        val t = ((at - t0).inWholeMilliseconds.toDouble() / span).coerceIn(0.0, 1.0)
-        return v0 + (v1 - v0) * t
     }
 }

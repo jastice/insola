@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,7 +41,6 @@ import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.dose.BurnTier
 import com.insola.uv.dose.VitaminDModel
 import kotlin.time.Duration
-import kotlinx.datetime.Instant
 
 @Composable
 fun DashboardScreen(viewModel: DashboardViewModel, modifier: Modifier = Modifier) {
@@ -159,8 +159,8 @@ private fun UvTodayCard(
 private fun SessionList(state: DashboardState, onRemove: (Int) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         state.sessions.forEachIndexed { index, session ->
-            val startHour = hoursFromDayStart(session.start, state)
-            val endHour = session.end?.let { hoursFromDayStart(it, state) } ?: state.hourOfDay
+            val startHour = state.scenario.instantToHour(session.start) ?: 0.0
+            val endHour = session.end?.let { state.scenario.instantToHour(it) } ?: state.hourOfDay
             val durationMin = ((endHour - startHour).coerceAtLeast(0.0) * 60).toLong()
             val timeRange = if (session.isOpen) {
                 "${formatClock(startHour)} → now"
@@ -185,11 +185,6 @@ private fun SessionList(state: DashboardState, onRemove: (Int) -> Unit) {
     }
 }
 
-private fun hoursFromDayStart(instant: Instant, state: DashboardState): Double {
-    val ms = (instant - state.scenario.dayStart).inWholeMilliseconds
-    return ms / 3_600_000.0
-}
-
 @Composable
 private fun LegendDot(color: Color, label: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -198,13 +193,6 @@ private fun LegendDot(color: Color, label: String) {
         Text(label, style = MaterialTheme.typography.labelSmall)
     }
 }
-
-// Vitamin-D bucket colors. Trace = neutral gray, Low = amber building, Adequate = healthy
-// green, Likely = saturated deep green.
-private val VitDTrace = Color(0xFFBDBDBD)
-private val VitDLow = Color(0xFFFFB300)
-private val VitDAdequate = Color(0xFF66BB6A)
-private val VitDLikely = Color(0xFF2E7D32)
 
 @Composable
 private fun SunBudgetCard(state: DashboardState) {
@@ -256,28 +244,34 @@ private fun SunBudgetCard(state: DashboardState) {
  */
 @Composable
 private fun BurnBudgetBar(budgetPercent: Double) {
-    val maxPercent = 400.0
-    val frac = (budgetPercent / maxPercent).coerceIn(0.0, 1.0).toFloat()
+    val ceiling = BurnTier.CEILING_FRACTION_OF_MED
+    val frac = (budgetPercent / (ceiling * 100.0)).coerceIn(0.0, 1.0).toFloat()
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
     val tickColor = MaterialTheme.colorScheme.onSurface
+    val gradientStops = remember(ceiling) {
+        BurnTier.entries
+            .map { (it.minFractionOfMed / ceiling).toFloat() to it.color() }
+            .toTypedArray()
+    }
+    // Ticks at the 1-MED (first reddening) and 2-MED (sunburn) lines.
+    val tickFractions = remember(ceiling) {
+        listOf(BurnTier.VisibleReddening, BurnTier.Sunburn)
+            .map { (it.minFractionOfMed / ceiling).toFloat() }
+    }
     Canvas(modifier = Modifier.fillMaxWidth().height(12.dp)) {
         val w = size.width
         val h = size.height
         drawRect(color = trackColor, topLeft = Offset.Zero, size = Size(w, h))
         if (frac > 0f) {
             val brush = Brush.horizontalGradient(
-                0.000f to UvGreen,
-                0.125f to UvYellow,
-                0.250f to UvOrange,
-                0.500f to UvRed,
-                1.000f to UvPurple,
+                colorStops = gradientStops,
                 startX = 0f,
                 endX = w,
             )
             drawRect(brush = brush, topLeft = Offset.Zero, size = Size(w * frac, h))
         }
         val tickW = 1.5.dp.toPx()
-        listOf(0.25f, 0.50f).forEach { x ->
+        tickFractions.forEach { x ->
             drawRect(
                 color = tickColor,
                 topLeft = Offset(x * w - tickW / 2, 0f),
@@ -326,14 +320,6 @@ private fun VitaminDBar(score: Double, sensitivity: SkinSensitivity) {
             drawRect(brush = brush, topLeft = Offset.Zero, size = Size(w * frac, h))
         }
     }
-}
-
-private fun vitaminDLabel(bucket: VitaminDModel.Bucket): String = when (bucket) {
-    VitaminDModel.Bucket.None -> "None"
-    VitaminDModel.Bucket.Trace -> "Trace"
-    VitaminDModel.Bucket.Low -> "Low"
-    VitaminDModel.Bucket.Adequate -> "Adequate"
-    VitaminDModel.Bucket.Likely -> "Likely sufficient"
 }
 
 @Composable

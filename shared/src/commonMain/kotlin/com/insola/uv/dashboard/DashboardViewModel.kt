@@ -18,7 +18,6 @@ import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.minutes
 
 data class DashboardState(
     val scenario: Scenario,
@@ -107,10 +106,8 @@ class DashboardViewModel(
         sessionsFlow.value = list.toMutableList().apply { removeAt(index) }
     }
 
-    private fun currentNow(): Instant {
-        val scenario = Fixtures.byId(scenarioIdFlow.value)
-        return scenario.dayStart + (hourFlow.value * 60).minutes
-    }
+    private fun currentNow(): Instant =
+        Fixtures.byId(scenarioIdFlow.value).hourToInstant(hourFlow.value)
 
     companion object {
         private fun wallClockHourOfDay(): Double {

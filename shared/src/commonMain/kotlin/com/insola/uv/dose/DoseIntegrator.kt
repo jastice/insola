@@ -3,9 +3,8 @@ package com.insola.uv.dose
 import com.insola.uv.domain.ExposureInterval
 import com.insola.uv.domain.UvForecast
 import com.insola.uv.domain.UvSample
+import com.insola.uv.domain.lerp
 import kotlinx.datetime.Instant
-import kotlin.math.max
-import kotlin.math.min
 
 object DoseIntegrator {
 
@@ -26,8 +25,8 @@ object DoseIntegrator {
         val segStart = maxOf(a.time, from)
         val segEnd = minOf(b.time, to)
         if (segEnd <= segStart) return 0.0
-        val uvA = interpolate(a, b, segStart)
-        val uvB = interpolate(a, b, segEnd)
+        val uvA = lerp(a.time, a.uvIndex, b.time, b.uvIndex, segStart)
+        val uvB = lerp(a.time, a.uvIndex, b.time, b.uvIndex, segEnd)
         val hours = (segEnd - segStart).inWholeMilliseconds / 3_600_000.0
         return 0.5 * (uvA + uvB) * hours
     }
@@ -37,13 +36,5 @@ object DoseIntegrator {
         intervals: List<ExposureInterval>,
     ): Double = intervals.sumOf { interval ->
         integrate(forecast, interval.start, interval.end, interval.exposureFactor)
-    }
-
-    private fun interpolate(a: UvSample, b: UvSample, at: Instant): Double {
-        if (b.time == a.time) return a.uvIndex
-        val span = (b.time - a.time).inWholeMilliseconds.toDouble()
-        val t = (at - a.time).inWholeMilliseconds.toDouble() / span
-        val clamped = min(1.0, max(0.0, t))
-        return a.uvIndex + (b.uvIndex - a.uvIndex) * clamped
     }
 }

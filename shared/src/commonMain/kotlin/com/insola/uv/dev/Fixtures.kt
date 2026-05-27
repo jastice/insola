@@ -8,6 +8,7 @@ import kotlinx.datetime.Instant
 import kotlin.math.PI
 import kotlin.math.sin
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * A synthetic dev scenario: a location, a calendar day (expressed as the [Instant] of midnight
@@ -37,6 +38,20 @@ data class Scenario(
     }
 
     val dayEnd: Instant get() = dayStart + 24.hours
+
+    /** Convert an hour-of-day (0..24) to the corresponding [Instant] within this scenario's day. */
+    fun hourToInstant(hour: Double): Instant =
+        dayStart + (hour * 3_600_000.0).toLong().milliseconds
+
+    /**
+     * Inverse of [hourToInstant]: how many hours past [dayStart] is [instant]? Returns null if the
+     * instant falls before the scenario's day begins.
+     */
+    fun instantToHour(instant: Instant): Double? {
+        val ms = (instant - dayStart).inWholeMilliseconds
+        if (ms < 0) return null
+        return ms / 3_600_000.0
+    }
 }
 
 object Fixtures {

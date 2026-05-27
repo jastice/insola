@@ -3,6 +3,7 @@ package com.insola.uv.dose
 import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.domain.UvForecast
 import com.insola.uv.domain.UvSample
+import com.insola.uv.domain.lerp
 import kotlinx.datetime.Instant
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -61,18 +62,10 @@ object BurnModel {
     ): EvaluatedSegment? {
         if (b.time <= now) return null
         val segStart = maxOf(a.time, now)
-        val uvA = interpolate(a.time, a.uvIndex, b.time, b.uvIndex, segStart)
+        val uvA = lerp(a.time, a.uvIndex, b.time, b.uvIndex, segStart)
         val hours = (b.time - segStart).inWholeMilliseconds / 3_600_000.0
         val dose = 0.5 * (uvA + b.uvIndex) * hours * factor
         return EvaluatedSegment(segStart, uvA, b.uvIndex, hours, dose)
-    }
-
-    private fun interpolate(t0: Instant, v0: Double, t1: Instant, v1: Double, at: Instant): Double {
-        if (t1 == t0) return v0
-        val span = (t1 - t0).inWholeMilliseconds.toDouble()
-        val t = (at - t0).inWholeMilliseconds.toDouble() / span
-        val clamped = t.coerceIn(0.0, 1.0)
-        return v0 + (v1 - v0) * clamped
     }
 
     /**
