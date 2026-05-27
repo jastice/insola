@@ -24,21 +24,29 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.insola.uv.domain.Acclimatization
+import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.dose.BurnTier
 import com.insola.uv.dose.VitaminDModel
@@ -71,30 +79,57 @@ fun DashboardScreen(viewModel: DashboardViewModel, modifier: Modifier = Modifier
     }
 }
 
+private enum class DashboardTab(val label: String) { Day("Day"), Skin("Skin") }
+
 @Composable
 private fun DashboardContent(
     state: DashboardState,
     viewModel: DashboardViewModel,
     modifier: Modifier,
 ) {
-    LazyColumn(
-        modifier = modifier.padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item { ScenarioPicker(viewModel.scenarios.map { it.id to it.name }, state.scenario.id, viewModel::selectScenario) }
-        item { Text(state.scenario.description, style = MaterialTheme.typography.bodySmall) }
-        item {
-            UvTodayCard(
-                state = state,
-                onHourChange = viewModel::setHourOfDay,
-                onToggleOutside = viewModel::toggleOutside,
-            )
+    var selectedTab by rememberSaveable { mutableStateOf(DashboardTab.Day) }
+    Column(modifier = modifier) {
+        PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
+            DashboardTab.entries.forEach { tab ->
+                Tab(
+                    selected = tab == selectedTab,
+                    onClick = { selectedTab = tab },
+                    text = { Text(tab.label) },
+                )
+            }
         }
-        item { SunBudgetCard(state) }
-        if (state.sessions.isNotEmpty()) {
-            item { OutdoorLogCard(state, viewModel::removeSession) }
+        LazyColumn(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            when (selectedTab) {
+                DashboardTab.Day -> {
+                    item { ScenarioPicker(viewModel.scenarios.map { it.id to it.name }, state.scenario.id, viewModel::selectScenario) }
+                    item { Text(state.scenario.description, style = MaterialTheme.typography.bodySmall) }
+                    item {
+                        UvTodayCard(
+                            state = state,
+                            onHourChange = viewModel::setHourOfDay,
+                            onToggleOutside = viewModel::toggleOutside,
+                        )
+                    }
+                    item { SunBudgetCard(state) }
+                    if (state.sessions.isNotEmpty()) {
+                        item { OutdoorLogCard(state, viewModel::removeSession) }
+                    }
+                }
+                DashboardTab.Skin -> {
+                    item { PhototypePicker(state.profile.phototype, viewModel::setPhototype) }
+                    item {
+                        AcclimatizationPicker(
+                            profile = state.profile,
+                            onSelect = viewModel::setAcclimatization,
+                        )
+                    }
+                    item { SkinSummaryChart(state.skinSummary) }
+                }
+            }
         }
-        item { SensitivityPicker(state.sensitivity, viewModel::setSensitivity) }
     }
 }
 
@@ -256,10 +291,7 @@ private fun SunBudgetCard(state: DashboardState) {
             BurnBudgetBar(state.budgetPercent)
             Spacer(Modifier.height(2.dp))
             Text(
-                text = state.burnTier.label + " · " +
-                    "${formatNumber(state.budgetPercent.coerceAtLeast(0.0), 0)}% · " +
-                    "${formatNumber(state.accumulatedDose, 2)} of " +
-                    "${formatNumber(state.sensitivity.medThresholdUvIndexHours, 1)} UV-idx·h",
+                text = burnBudgetSubtitle(state),
                 style = MaterialTheme.typography.bodySmall,
             )
 
@@ -267,7 +299,7 @@ private fun SunBudgetCard(state: DashboardState) {
 
             Text("Vitamin D", style = MaterialTheme.typography.labelSmall)
             Spacer(Modifier.height(4.dp))
-            VitaminDBar(state.vitaminDScore, state.sensitivity)
+            VitaminDBar(state.vitaminDScore, state.profile)
             Spacer(Modifier.height(2.dp))
             Text(vitaminDLabel(state.vitaminDBucket), style = MaterialTheme.typography.bodySmall)
         }
@@ -332,16 +364,34 @@ private fun BurnTimeLine(label: String, time: Duration?) {
 }
 
 /**
- * Vitamin-D bar: full width represents 1.5 × SDD (one standard daily dose) so the Likely band
+ * Vitamin-D bar: full width represents 1.5 × SDD (one standard daily dose) so the Sufficient band
  * has visible headroom past the 1-SDD line. A smooth gradient runs gray → amber → light green →
  * deep green, positionally anchored to the bucket boundaries (0.25, 0.5, 1.0 SDD as fractions
  * of the bar = 0.167, 0.333, 0.667). The fill stops at the current score so the head's color
  * always matches the user's current bucket.
  */
+private fun burnBudgetSubtitle(state: DashboardState): String {
+    val baseline = state.profile.phototype.medThresholdUvIndexHours
+    val effective = state.profile.effectiveMedUvIndexHours
+    val tan = state.profile.effectiveAcclimatizationFactor
+    val medText = if (tan > 1.0001) {
+        "${formatNumber(effective, 1)} UV-idx·h (×${formatNumber(tan, 1)} tan, " +
+            "base ${formatNumber(baseline, 1)})"
+    } else {
+        "${formatNumber(baseline, 1)} UV-idx·h"
+    }
+    return state.burnTier.label + " · " +
+        "${formatNumber(state.budgetPercent.coerceAtLeast(0.0), 0)}% · " +
+        "${formatNumber(state.accumulatedDose, 2)} of $medText"
+}
+
 @Composable
-private fun VitaminDBar(score: Double, sensitivity: SkinSensitivity) {
-    val maxScore = 1.5 * (sensitivity.medThresholdUvIndexHours / 16.0)
-    val frac = (score / maxScore).coerceIn(0.0, 1.0).toFloat()
+private fun VitaminDBar(score: Double, profile: SkinProfile) {
+    // Fill matches the bucket: SDD anchored to baseline phototype MED, score attenuated by
+    // melanin (acclimatization) — see VitaminDModel.bucket / effectiveYield.
+    val effective = VitaminDModel.effectiveYield(score, profile)
+    val maxScore = 1.5 * (profile.phototype.medThresholdUvIndexHours / 16.0)
+    val frac = (effective / maxScore).coerceIn(0.0, 1.0).toFloat()
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
     Canvas(modifier = Modifier.fillMaxWidth().height(12.dp)) {
         val w = size.width
@@ -352,8 +402,8 @@ private fun VitaminDBar(score: Double, sensitivity: SkinSensitivity) {
                 0.000f to VitDTrace,
                 0.167f to VitDLow,
                 0.333f to VitDAdequate,
-                0.667f to VitDLikely,
-                1.000f to VitDLikely,
+                0.667f to VitDSufficient,
+                1.000f to VitDSufficient,
                 startX = 0f,
                 endX = w,
             )
@@ -363,26 +413,105 @@ private fun VitaminDBar(score: Double, sensitivity: SkinSensitivity) {
 }
 
 @Composable
-private fun SensitivityPicker(selected: SkinSensitivity, onSelect: (SkinSensitivity) -> Unit) {
+private fun PhototypePicker(selected: SkinSensitivity, onSelect: (SkinSensitivity) -> Unit) {
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Text("Skin type (Fitzpatrick)", style = MaterialTheme.typography.labelMedium)
             Spacer(Modifier.height(4.dp))
             Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                val accent = MaterialTheme.colorScheme.onBackground
                 SkinSensitivity.entries.forEach { type ->
+                    val tone = skinTone(type)
+                    val labelColor = tone.contrastingOnTone()
+                    val isSelected = type == selected
                     FilterChip(
-                        selected = type == selected,
+                        selected = isSelected,
                         onClick = { onSelect(type) },
                         label = { Text(type.name) },
-                        colors = FilterChipDefaults.filterChipColors(),
+                        modifier = if (isSelected) Modifier.scale(1.1f) else Modifier,
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = tone,
+                            selectedContainerColor = tone,
+                            labelColor = labelColor,
+                            selectedLabelColor = labelColor,
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = isSelected,
+                            borderColor = Color.Transparent,
+                            selectedBorderColor = accent,
+                            borderWidth = 0.dp,
+                            selectedBorderWidth = 1.5.dp,
+                        ),
                     )
                 }
             }
             Spacer(Modifier.height(4.dp))
             Text(selected.description, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun AcclimatizationPicker(
+    profile: SkinProfile,
+    onSelect: (Acclimatization) -> Unit,
+) {
+    Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Tan", style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.height(4.dp))
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val accent = MaterialTheme.colorScheme.onBackground
+                Acclimatization.entries.forEach { level ->
+                    val tone = skinTone(profile.phototype, level)
+                    val labelColor = tone.contrastingOnTone()
+                    val isSelected = level == profile.acclimatization
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { onSelect(level) },
+                        label = { Text(level.name) },
+                        modifier = if (isSelected) Modifier.scale(1.1f) else Modifier,
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = tone,
+                            selectedContainerColor = tone,
+                            labelColor = labelColor,
+                            selectedLabelColor = labelColor,
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = isSelected,
+                            borderColor = Color.Transparent,
+                            selectedBorderColor = accent,
+                            borderWidth = 0.dp,
+                            selectedBorderWidth = 1.5.dp,
+                        ),
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            // Show the actually-applied multiplier (after the phototype cap clips it).
+            val applied = profile.effectiveAcclimatizationFactor
+            val capped = applied < profile.acclimatization.factor - 1e-9
+            val capNote = if (capped) {
+                " (capped at ×${formatNumber(applied, 1)} for type ${profile.phototype.name})"
+            } else {
+                ""
+            }
+            Text(
+                profile.acclimatization.description + " · MED ×${formatNumber(applied, 1)}" + capNote,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }
