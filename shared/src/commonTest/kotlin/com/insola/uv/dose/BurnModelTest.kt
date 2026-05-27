@@ -72,6 +72,24 @@ class BurnModelTest {
     }
 
     @Test
+    fun thresholdMultiplier_pushesCrossingLater() {
+        // At constant UV 3 for Type III (MED = 3.9 UV-idx·h):
+        //   1.0× MED → 3.9 / 3 = 1.30 h = 78 min
+        //   2.0× MED → 7.8 / 3 = 2.60 h = 156 min
+        val f = forecast(List(8) { 3.0 })
+        val oneMed = BurnModel.timeToThreshold(
+            origin, f, SkinSensitivity.III, assumedFactor = 1.0, thresholdMultiplier = 1.0,
+        )
+        val twoMed = BurnModel.timeToThreshold(
+            origin, f, SkinSensitivity.III, assumedFactor = 1.0, thresholdMultiplier = 2.0,
+        )
+        assertNotNull(oneMed)
+        assertNotNull(twoMed)
+        assertEquals(78L, oneMed.inWholeMinutes)
+        assertEquals(156L, twoMed.inWholeMinutes)
+    }
+
+    @Test
     fun risingVsFalling_giveDifferentTimes() {
         val rising = forecast(listOf(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0))
         val falling = forecast(listOf(7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0))

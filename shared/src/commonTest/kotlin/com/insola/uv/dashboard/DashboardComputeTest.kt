@@ -40,7 +40,7 @@ class DashboardComputeTest {
     fun equatorialNoon_hasShortTimeToBurn_andStrongVitD() {
         val s = stateAt("equator", hour = 12.0, skin = SkinSensitivity.III)
         assertTrue(s.currentUv > 8.0, "noon UV should be high, got ${s.currentUv}")
-        val ttb = s.timeToBurn
+        val ttb = s.timeToFirstReddening
         assertNotNull(ttb)
         assertTrue(ttb.inWholeMinutes < 60, "should burn quickly at peak equatorial UV, got $ttb")
         assertTrue(
@@ -55,7 +55,7 @@ class DashboardComputeTest {
         // weighting collapses that low, so even a full-day session produces at most a
         // Trace amount — never enough to register as meaningful vitamin D.
         val s = stateAt("reykjavik", hour = 23.5, skin = SkinSensitivity.II)
-        assertNull(s.timeToBurn, "should never burn in arctic winter")
+        assertNull(s.timeToFirstReddening, "should never burn in arctic winter")
         assertTrue(
             s.vitaminDBucket <= VitaminDModel.Bucket.Trace,
             "expected at most Trace vit-D in arctic winter, got ${s.vitaminDBucket}",
@@ -104,8 +104,8 @@ class DashboardComputeTest {
             "Type I should use a higher % of budget than Type VI for the same dose " +
                 "(typeI=${typeI.budgetPercent}%, typeVI=${typeVI.budgetPercent}%)",
         )
-        val ttbI = typeI.timeToBurn
-        val ttbVI = typeVI.timeToBurn
+        val ttbI = typeI.timeToFirstReddening
+        val ttbVI = typeVI.timeToFirstReddening
         assertNotNull(ttbI)
         assertNotNull(ttbVI)
         assertTrue(ttbVI > ttbI, "Type VI should take longer to burn than Type I (I=$ttbI, VI=$ttbVI)")

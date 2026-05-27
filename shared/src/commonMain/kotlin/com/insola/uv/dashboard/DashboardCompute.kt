@@ -5,6 +5,7 @@ import com.insola.uv.domain.OutdoorSession
 import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.domain.uvAt
 import com.insola.uv.dose.BurnModel
+import com.insola.uv.dose.BurnTier
 import com.insola.uv.dose.DoseIntegrator
 import com.insola.uv.dose.VitaminDModel
 import com.insola.uv.solar.SolarGeometry
@@ -41,13 +42,24 @@ object DashboardCompute {
         val daylight = SolarGeometry.daylightWindow(scenario.location, scenario.dayStart)
 
         val accumulated = DoseIntegrator.integrateOverIntervals(forecast, effectiveIntervals)
-        val budgetPercent = accumulated / sensitivity.medThresholdUvIndexHours * 100.0
-        val timeToBurn = BurnModel.timeToThreshold(
+        val medThreshold = sensitivity.medThresholdUvIndexHours
+        val budgetPercent = accumulated / medThreshold * 100.0
+        val burnTier = BurnTier.forFractionOfMed(accumulated / medThreshold)
+        val timeToFirstReddening = BurnModel.timeToThreshold(
             now = now,
             forecast = forecast,
             sensitivity = sensitivity,
             assumedFactor = 1.0,
             alreadyAccumulated = accumulated,
+            thresholdMultiplier = 1.0,
+        )
+        val timeToSunburn = BurnModel.timeToThreshold(
+            now = now,
+            forecast = forecast,
+            sensitivity = sensitivity,
+            assumedFactor = 1.0,
+            alreadyAccumulated = accumulated,
+            thresholdMultiplier = 2.0,
         )
         val vitDScore = VitaminDModel.accumulateOverIntervals(
             forecast = forecast,
@@ -67,7 +79,9 @@ object DashboardCompute {
             sunsetHour = daylight.sunsetHour,
             accumulatedDose = accumulated,
             budgetPercent = budgetPercent,
-            timeToBurn = timeToBurn,
+            burnTier = burnTier,
+            timeToFirstReddening = timeToFirstReddening,
+            timeToSunburn = timeToSunburn,
             vitaminDScore = vitDScore,
             vitaminDBucket = vitDBucket,
             sessions = sessions,

@@ -19,8 +19,10 @@ object BurnModel {
 
     /**
      * Forward-integrates from [now] over the [forecast]; returns the duration after which the
-     * accumulated dose crosses the MED threshold for [sensitivity], assuming a continuous
-     * [assumedFactor] exposure. Returns null if the threshold is never crossed within the forecast.
+     * accumulated dose crosses [thresholdMultiplier] × the MED threshold for [sensitivity],
+     * assuming continuous [assumedFactor] exposure. Pass `1.0` for first reddening (one MED),
+     * `2.0` for the "felt sunburn" line. Returns null if the threshold is never crossed within
+     * the forecast.
      */
     fun timeToThreshold(
         now: Instant,
@@ -28,8 +30,9 @@ object BurnModel {
         sensitivity: SkinSensitivity,
         assumedFactor: Double,
         alreadyAccumulated: Double = 0.0,
+        thresholdMultiplier: Double = 1.0,
     ): Duration? {
-        val threshold = sensitivity.medThresholdUvIndexHours
+        val threshold = sensitivity.medThresholdUvIndexHours * thresholdMultiplier
         if (assumedFactor <= 0.0) return null
         if (alreadyAccumulated >= threshold) return Duration.ZERO
         if (forecast.samples.size < 2) return null

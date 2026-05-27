@@ -6,6 +6,7 @@ import com.insola.uv.dev.Fixtures
 import com.insola.uv.dev.Scenario
 import com.insola.uv.domain.OutdoorSession
 import com.insola.uv.domain.SkinSensitivity
+import com.insola.uv.dose.BurnTier
 import com.insola.uv.dose.VitaminDModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -30,7 +31,9 @@ data class DashboardState(
     val sunsetHour: Double?,
     val accumulatedDose: Double,
     val budgetPercent: Double,
-    val timeToBurn: Duration?,
+    val burnTier: BurnTier,
+    val timeToFirstReddening: Duration?,
+    val timeToSunburn: Duration?,
     val vitaminDScore: Double,
     val vitaminDBucket: VitaminDModel.Bucket,
     val sessions: List<OutdoorSession>,

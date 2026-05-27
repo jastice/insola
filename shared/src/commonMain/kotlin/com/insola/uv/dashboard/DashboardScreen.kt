@@ -37,7 +37,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.insola.uv.domain.SkinSensitivity
+import com.insola.uv.dose.BurnTier
 import com.insola.uv.dose.VitaminDModel
+import kotlin.time.Duration
 import kotlinx.datetime.Instant
 
 @Composable
@@ -214,19 +216,20 @@ private fun SunBudgetCard(state: DashboardState) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top,
             ) {
                 Text("Burn budget", style = MaterialTheme.typography.labelSmall)
-                Text(
-                    text = state.timeToBurn?.let { "burn in ${formatDuration(it)}" }
-                        ?: "no burn risk",
-                    style = MaterialTheme.typography.labelSmall,
-                )
+                Column(horizontalAlignment = Alignment.End) {
+                    BurnTimeLine("first reddening", state.timeToFirstReddening)
+                    BurnTimeLine("sunburn", state.timeToSunburn)
+                }
             }
             Spacer(Modifier.height(4.dp))
             BurnBudgetBar(state.budgetPercent)
             Spacer(Modifier.height(2.dp))
             Text(
-                text = "${formatNumber(state.budgetPercent.coerceAtLeast(0.0), 0)}% · " +
+                text = state.burnTier.label + " · " +
+                    "${formatNumber(state.budgetPercent.coerceAtLeast(0.0), 0)}% · " +
                     "${formatNumber(state.accumulatedDose, 2)} of " +
                     "${formatNumber(state.sensitivity.medThresholdUvIndexHours, 1)} UV-idx·h",
                 style = MaterialTheme.typography.bodySmall,
@@ -244,13 +247,67 @@ private fun SunBudgetCard(state: DashboardState) {
 }
 
 /**
- * Burn budget bar: gradient anchored to absolute 0–100% (green→yellow→orange→red→purple),
- * filled proportionally from the left. Colors stay pinned to the underlying % so the band
- * the fill is currently in matches the UV-band palette of the chart above.
+ * Burn budget bar: full width represents 4 MED (the "serious burn" line). A smooth
+ * green→yellow→orange→red→purple gradient is positionally anchored to the BurnTier band
+ * boundaries (50% MED → yellow, 100% MED → orange, 200% MED → red, 400% MED → purple), and
+ * only the portion up to the current accumulated dose is filled so the color under the head of
+ * the fill always matches the user's current tier. Ticks at 25% and 50% of the bar mark the
+ * 1-MED (first reddening) and 2-MED (sunburn) lines.
  */
 @Composable
 private fun BurnBudgetBar(budgetPercent: Double) {
-    val frac = (budgetPercent / 100.0).coerceIn(0.0, 1.0).toFloat()
+    val maxPercent = 400.0
+    val frac = (budgetPercent / maxPercent).coerceIn(0.0, 1.0).toFloat()
+    val trackColor = MaterialTheme.colorScheme.surfaceVariant
+    val tickColor = MaterialTheme.colorScheme.onSurface
+    Canvas(modifier = Modifier.fillMaxWidth().height(12.dp)) {
+        val w = size.width
+        val h = size.height
+        drawRect(color = trackColor, topLeft = Offset.Zero, size = Size(w, h))
+        if (frac > 0f) {
+            val brush = Brush.horizontalGradient(
+                0.000f to UvGreen,
+                0.125f to UvYellow,
+                0.250f to UvOrange,
+                0.500f to UvRed,
+                1.000f to UvPurple,
+                startX = 0f,
+                endX = w,
+            )
+            drawRect(brush = brush, topLeft = Offset.Zero, size = Size(w * frac, h))
+        }
+        val tickW = 1.5.dp.toPx()
+        listOf(0.25f, 0.50f).forEach { x ->
+            drawRect(
+                color = tickColor,
+                topLeft = Offset(x * w - tickW / 2, 0f),
+                size = Size(tickW, h),
+            )
+        }
+    }
+}
+
+@Composable
+private fun BurnTimeLine(label: String, time: Duration?) {
+    val text = when {
+        time == null -> "$label · —"
+        time == Duration.ZERO -> "$label · reached"
+        else -> "$label · in ${formatDuration(time)}"
+    }
+    Text(text, style = MaterialTheme.typography.labelSmall)
+}
+
+/**
+ * Vitamin-D bar: full width represents 1.5 × SDD (one standard daily dose) so the Likely band
+ * has visible headroom past the 1-SDD line. A smooth gradient runs gray → amber → light green →
+ * deep green, positionally anchored to the bucket boundaries (0.25, 0.5, 1.0 SDD as fractions
+ * of the bar = 0.167, 0.333, 0.667). The fill stops at the current score so the head's color
+ * always matches the user's current bucket.
+ */
+@Composable
+private fun VitaminDBar(score: Double, sensitivity: SkinSensitivity) {
+    val maxScore = 1.5 * (sensitivity.medThresholdUvIndexHours / 16.0)
+    val frac = (score / maxScore).coerceIn(0.0, 1.0).toFloat()
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
     Canvas(modifier = Modifier.fillMaxWidth().height(12.dp)) {
         val w = size.width
@@ -258,46 +315,15 @@ private fun BurnBudgetBar(budgetPercent: Double) {
         drawRect(color = trackColor, topLeft = Offset.Zero, size = Size(w, h))
         if (frac > 0f) {
             val brush = Brush.horizontalGradient(
-                colors = listOf(UvGreen, UvYellow, UvOrange, UvRed, UvPurple),
+                0.000f to VitDTrace,
+                0.167f to VitDLow,
+                0.333f to VitDAdequate,
+                0.667f to VitDLikely,
+                1.000f to VitDLikely,
                 startX = 0f,
                 endX = w,
             )
             drawRect(brush = brush, topLeft = Offset.Zero, size = Size(w * frac, h))
-        }
-    }
-}
-
-/**
- * Vitamin-D bar: bar length is the actual score (normalized to a fixed multiple of MED so the
- * scale is comparable across skin types). The fill is split into bucket-colored segments so the
- * user reads both "how much" (length) and "what tier" (color).
- */
-@Composable
-private fun VitaminDBar(score: Double, sensitivity: SkinSensitivity) {
-    val sdd = sensitivity.medThresholdUvIndexHours / 16.0
-    val maxScore = 1.5 * sdd // shows all four bucket bands at full width with headroom past 1 SDD
-    val frac = (score / maxScore).coerceIn(0.0, 1.0).toFloat()
-    val trackColor = MaterialTheme.colorScheme.surfaceVariant
-    val segments = listOf(
-        0.25 * sdd to VitDTrace,
-        0.5 * sdd to VitDLow,
-        1.0 * sdd to VitDAdequate,
-        maxScore to VitDLikely,
-    )
-    Canvas(modifier = Modifier.fillMaxWidth().height(12.dp)) {
-        val w = size.width
-        val h = size.height
-        drawRect(color = trackColor, topLeft = Offset.Zero, size = Size(w, h))
-        val filledScore = (frac * maxScore)
-        var cursor = 0.0
-        segments.forEach { (boundary, color) ->
-            val segEnd = minOf(boundary, filledScore)
-            if (segEnd > cursor) {
-                val x0 = (cursor / maxScore).toFloat() * w
-                val x1 = (segEnd / maxScore).toFloat() * w
-                drawRect(color = color, topLeft = Offset(x0, 0f), size = Size(x1 - x0, h))
-                cursor = segEnd
-            }
         }
     }
 }
