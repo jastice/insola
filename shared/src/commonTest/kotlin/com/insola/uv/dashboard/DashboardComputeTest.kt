@@ -3,9 +3,11 @@ package com.insola.uv.dashboard
 import com.insola.uv.dev.Fixtures
 import com.insola.uv.dev.Scenario
 import com.insola.uv.domain.Acclimatization
+import com.insola.uv.domain.AttenuationTimeline
 import com.insola.uv.domain.OutdoorSession
 import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.SkinSensitivity
+import com.insola.uv.domain.Spf
 import com.insola.uv.dose.VitaminDModel
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -13,6 +15,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.minutes
 
 /**
  * Drives the same compute the UI sees. Sessions are explicit — tests that need "continuous outdoor"
@@ -28,14 +31,17 @@ class DashboardComputeTest {
         hour: Double,
         skin: SkinSensitivity,
         acclimatization: Acclimatization = Acclimatization.None,
+        defaultSpf: Spf = Spf.Off,
         sessions: List<OutdoorSession>? = null,
+        attenuation: AttenuationTimeline = AttenuationTimeline.Empty,
     ): DashboardState {
         val scenario = Fixtures.byId(scenarioId)
         return DashboardCompute.compute(
             scenario = scenario,
             hourOfDay = hour,
-            profile = SkinProfile(skin, acclimatization),
+            profile = SkinProfile(skin, acclimatization, defaultSpf),
             sessions = sessions ?: listOf(fullDaySession(scenario)),
+            attenuation = attenuation,
         )
     }
 
@@ -202,6 +208,198 @@ class DashboardComputeTest {
             "4h session should accumulate more than 1h session " +
                 "(short=${shortState.accumulatedDose}, long=${longState.accumulatedDose})",
         )
+    }
+
+    @Test
+    fun defaultSpf_attenuatesAccumulatedDose() {
+        // Bare-skin vs SPF 30 default, identical short session. SPF transmittance (1/30)
+        // multiplies into the interval before integration, so the ratio is exact.
+        val scenario = Fixtures.byId("berlin")
+        val session = OutdoorSession(
+            start = scenario.dayStart + 11.hours,
+            end = scenario.dayStart + 12.hours,
+        )
+        val bare = DashboardCompute.compute(
+            scenario, 13.0, SkinProfile(SkinSensitivity.III), listOf(session),
+        )
+        val protected = DashboardCompute.compute(
+            scenario, 13.0,
+            SkinProfile(SkinSensitivity.III, defaultSpf = Spf.Spf30),
+            listOf(session),
+        )
+        assertEquals(bare.accumulatedDose / 30.0, protected.accumulatedDose, 1e-9)
+        assertEquals(Spf.Spf30.transmittance, protected.effectiveTransmittance, 1e-12)
+    }
+
+    @Test
+    fun defaultSpf_stretchesForwardTimeToBurn() {
+        // No past exposure, so time-to-burn is pure forward integration. With SPF 30 in play
+        // the burn integrator effectively sees `factor = 1/30`, and crossing MED takes 30×
+        // longer at constant UV. We only assert "much longer" because the UV curve isn't
+        // perfectly flat, so the multiplier is approximate.
+        val scenario = Fixtures.byId("berlin")
+        val bare = DashboardCompute.compute(
+            scenario, 9.0, SkinProfile(SkinSensitivity.III), sessions = emptyList(),
+        )
+        val protected = DashboardCompute.compute(
+            scenario, 9.0,
+            SkinProfile(SkinSensitivity.III, defaultSpf = Spf.Spf30),
+            sessions = emptyList(),
+        )
+        val bareBurn = bare.timeToFirstReddening
+        assertNotNull(bareBurn, "bare-skin should burn within the forecast")
+        // Protected may never burn within the forecast window (returned null) — that itself is
+        // a stronger statement than "much later", so accept either.
+        val protectedBurn = protected.timeToFirstReddening
+        if (protectedBurn != null) {
+            assertTrue(
+                protectedBurn > bareBurn * 10,
+                "SPF 30 should radically extend time-to-burn (bare=$bareBurn, protected=$protectedBurn)",
+            )
+        }
+    }
+
+    @Test
+    fun freshSunscreenApplication_overridesLowerDefault() {
+        // Default = Off; user applies SPF 50 right now. The forward burn integrator must
+        // pick up the application's transmittance instead of the bare default. A short
+        // session at hour 10 leaves room before MED on a Berlin-strength curve so the
+        // *forward* projection is non-trivial.
+        val scenario = Fixtures.byId("berlin")
+        val session = OutdoorSession(
+            start = scenario.dayStart + 10.hours,
+            end = scenario.dayStart + 10.hours + 15.minutes,
+        )
+        val now = scenario.hourToInstant(11.0)
+        val bare = DashboardCompute.compute(scenario, 11.0, SkinProfile(SkinSensitivity.III), listOf(session))
+        val boosted = DashboardCompute.compute(
+            scenario, 11.0, SkinProfile(SkinSensitivity.III), listOf(session),
+            attenuation = AttenuationTimeline(listOf(
+                AttenuationTimeline.Patch(now, Spf.Spf50.transmittance),
+            )),
+        )
+        // Past dose unchanged — the application doesn't retroactively undo accumulation.
+        assertEquals(bare.accumulatedDose, boosted.accumulatedDose, 1e-9)
+        assertEquals(Spf.Spf50.transmittance, boosted.effectiveTransmittance, 1e-12)
+        // SPF 50 forward should burn much later (or not within the forecast at all).
+        val bareBurn = bare.timeToFirstReddening
+        assertNotNull(bareBurn, "test setup expects bare-skin to burn within the forecast")
+        val boostedBurn = boosted.timeToFirstReddening
+        if (boostedBurn != null) {
+            assertTrue(
+                boostedBurn > bareBurn * 10,
+                "fresh SPF 50 should radically extend forward burn time (bare=$bareBurn, boosted=$boostedBurn)",
+            )
+        }
+    }
+
+    @Test
+    fun freshApplication_reducesBurnMeter_butDoesNotRetroactivelyUndoPastDose() {
+        // Berlin scenario, two-hour session 10:00–12:00, "now" is 12:00. Applying SPF 50 at the
+        // halfway point (11:00) must:
+        //   1. leave the first hour's dose untouched (no retroactive undo)
+        //   2. attenuate the second hour by 1/50 → accumulated burn meter drops noticeably
+        val scenario = Fixtures.byId("berlin")
+        val session = OutdoorSession(
+            start = scenario.dayStart + 10.hours,
+            end = scenario.dayStart + 12.hours,
+        )
+        val appliedHalfway = AttenuationTimeline.Patch(
+            appliedAt = scenario.dayStart + 11.hours,
+            transmittance = Spf.Spf50.transmittance,
+        )
+
+        val bare = DashboardCompute.compute(
+            scenario, 12.0, SkinProfile(SkinSensitivity.III), listOf(session),
+        )
+        val boosted = DashboardCompute.compute(
+            scenario, 12.0, SkinProfile(SkinSensitivity.III), listOf(session),
+            attenuation = AttenuationTimeline(listOf(appliedHalfway)),
+        )
+        // First hour was unprotected in both runs → boosted dose can't drop below ~½ bare.
+        // Second hour transmits 1/50 → boosted dose can't be much more than ½ bare.
+        assertTrue(
+            boosted.accumulatedDose < bare.accumulatedDose,
+            "applying SPF mid-session must reduce accumulated dose (bare=${bare.accumulatedDose}, boosted=${boosted.accumulatedDose})",
+        )
+        assertTrue(
+            boosted.accumulatedDose > bare.accumulatedDose * 0.4,
+            "first hour pre-apply must remain unattenuated (bare=${bare.accumulatedDose}, boosted=${boosted.accumulatedDose})",
+        )
+        assertTrue(
+            boosted.accumulatedDose < bare.accumulatedDose * 0.6,
+            "second hour post-apply should be attenuated ~50× (bare=${bare.accumulatedDose}, boosted=${boosted.accumulatedDose})",
+        )
+        assertTrue(
+            boosted.budgetPercent < bare.budgetPercent,
+            "burn-meter % must mirror the dose drop",
+        )
+    }
+
+    @Test
+    fun reapply_doesNotStripCoverageFromPreviouslyCoveredMoments() {
+        // The "fill-the-burn-budget" regression: previously the latest application replaced any
+        // earlier one in storage, so re-applying at 15:00 retroactively un-protected the 14–15
+        // hour that the 14:00 application had covered. The integrator now takes the strongest
+        // SPF active at each instant across *all* applications, so coverage can only extend.
+        val scenario = Fixtures.byId("berlin")
+        val session = OutdoorSession(
+            start = scenario.dayStart + 14.hours,
+            end = scenario.dayStart + 15.hours + 30.minutes,
+        )
+        val firstApply = AttenuationTimeline.Patch(
+            appliedAt = scenario.dayStart + 14.hours, transmittance = Spf.Spf50.transmittance,
+        )
+        val reApply = AttenuationTimeline.Patch(
+            appliedAt = scenario.dayStart + 15.hours + 30.minutes,
+            transmittance = Spf.Spf50.transmittance,
+        )
+
+        val onlyFirst = DashboardCompute.compute(
+            scenario, 15.5, SkinProfile(SkinSensitivity.III), listOf(session),
+            attenuation = AttenuationTimeline(listOf(firstApply)),
+        )
+        val afterReapply = DashboardCompute.compute(
+            scenario, 15.5, SkinProfile(SkinSensitivity.III), listOf(session),
+            attenuation = AttenuationTimeline(listOf(firstApply, reApply)),
+        )
+        // Both runs cover the entire session window — first apply spans 14:00–16:00, reapply
+        // adds 15:30–17:30. Burn-meter % must therefore be identical (and tiny). Before the
+        // fix, the reapply branch jumped to ~50× higher because the 14–15:30 window lost cover.
+        assertEquals(onlyFirst.accumulatedDose, afterReapply.accumulatedDose, 1e-9)
+        assertEquals(onlyFirst.budgetPercent, afterReapply.budgetPercent, 1e-9)
+    }
+
+    @Test
+    fun expiredApplication_fallsBackToDefault() {
+        // Application 3 hours old → past the 2h window → effective SPF reverts to the default.
+        val scenario = Fixtures.byId("equator")
+        val now = scenario.hourToInstant(13.0)
+        val appliedLongAgo = AttenuationTimeline.Patch(now - 3.hours, Spf.Spf50.transmittance)
+        val s = DashboardCompute.compute(
+            scenario, 13.0,
+            SkinProfile(SkinSensitivity.III, defaultSpf = Spf.Spf15),
+            sessions = emptyList(),
+            attenuation = AttenuationTimeline(listOf(appliedLongAgo)),
+        )
+        assertEquals(Spf.Spf15.transmittance, s.effectiveTransmittance, 1e-12)
+    }
+
+    @Test
+    fun applicationWeakerThanDefault_doesNotDowngrade() {
+        // Default SPF 50; user fiddles with the chip and presses Apply at SPF 15. Effective
+        // must remain SPF 50 — the rule is `max(default, applied-if-fresh)`.
+        val scenario = Fixtures.byId("equator")
+        val now = scenario.hourToInstant(13.0)
+        val s = DashboardCompute.compute(
+            scenario, 13.0,
+            SkinProfile(SkinSensitivity.III, defaultSpf = Spf.Spf50),
+            sessions = emptyList(),
+            attenuation = AttenuationTimeline(listOf(
+                AttenuationTimeline.Patch(now, Spf.Spf15.transmittance),
+            )),
+        )
+        assertEquals(Spf.Spf50.transmittance, s.effectiveTransmittance, 1e-12)
     }
 
     @Test

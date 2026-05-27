@@ -4,6 +4,7 @@ import com.insola.uv.dev.Fixtures
 import com.insola.uv.domain.Acclimatization
 import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.SkinSensitivity
+import com.insola.uv.domain.Spf
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -93,6 +94,28 @@ class SkinSummaryTest {
         // chart's X axis stays usable.
         val summary = SkinSummary.compute(Fixtures.byId("reykjavik"), SkinProfile(SkinSensitivity.III))
         assertTrue(summary.maxRelevantMinutes <= SkinSummary.MAX_AXIS_MINUTES + 1e-9)
+    }
+
+    @Test
+    fun effectiveSpf_stretchesBothBurnAndVitDByFactor() {
+        // SPF transmits 1/factor of UV. Both burn and vit-D rates ride the same erythemal
+        // weighting, so all minutes-to-X should scale up by SPF factor symmetrically.
+        val profile = SkinProfile(SkinSensitivity.III)
+        val bare = SkinSummary.compute(Fixtures.byId("equator"), profile, effectiveTransmittance = 1.0)
+        val spf30 = SkinSummary.compute(
+            Fixtures.byId("equator"), profile, effectiveTransmittance = Spf.Spf30.transmittance,
+        )
+        assertEquals(Spf.Spf30.transmittance, spf30.effectiveTransmittance, 1e-12)
+
+        val bareFirst = bare.minutesToFirstReddening
+        val spfFirst = spf30.minutesToFirstReddening
+        assertNotNull(bareFirst); assertNotNull(spfFirst)
+        assertEquals(bareFirst * 30.0, spfFirst, 1e-3)
+
+        val bareAdequate = bare.minutesToAdequateVitD
+        val spfAdequate = spf30.minutesToAdequateVitD
+        assertNotNull(bareAdequate); assertNotNull(spfAdequate)
+        assertEquals(bareAdequate * 30.0, spfAdequate, 1e-3)
     }
 
     @Test

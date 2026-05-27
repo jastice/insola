@@ -21,6 +21,11 @@ data class SkinSummary(
     val peakSolarElevationDeg: Double,
     val effectiveMedUvIndexHours: Double,
     val sddUvIndexHours: Double,
+    /**
+     * UV transmittance folded into the per-hour rates below — `1.0` is bare skin, smaller
+     * values mean stronger protection (e.g. `1.0 / 30.0` for an effective SPF 30).
+     */
+    val effectiveTransmittance: Double,
     /** Minutes to 1 MED (first reddening) at peak UV. */
     val minutesToFirstReddening: Double?,
     /** Minutes to 2 MED (felt sunburn) at peak UV. */
@@ -49,7 +54,11 @@ data class SkinSummary(
         /** Body fraction matches what [DashboardCompute] passes to [VitaminDModel.accumulate]. */
         private const val EXPOSED_BODY_FRACTION: Double = 0.25
 
-        fun compute(scenario: Scenario, profile: SkinProfile): SkinSummary {
+        fun compute(
+            scenario: Scenario,
+            profile: SkinProfile,
+            effectiveTransmittance: Double = 1.0,
+        ): SkinSummary {
             val peakSample = scenario.forecast.samples.maxByOrNull { it.uvIndex }
             val peakUv = peakSample?.uvIndex ?: 0.0
             val peakElevation = peakSample
@@ -59,12 +68,12 @@ data class SkinSummary(
             val effectiveMed = profile.effectiveMedUvIndexHours
             val sddBaseline = profile.phototype.medThresholdUvIndexHours / 16.0
 
-            // Burn rate (UV-idx·h per hour) and vit-D-yield rate (already attenuated by melanin,
-            // i.e. comparable directly to sddBaseline). Both are linear in elapsed time at
-            // constant peak UV, so the time to any threshold is just threshold / rate.
-            val burnRatePerHour = peakUv
+            // Transmittance is symmetric on burn and vit-D — both ride the same erythemal-
+            // weighted UV index — so a single scalar folds into both rates and the time-to-X
+            // formulas below stay linear.
+            val burnRatePerHour = peakUv * effectiveTransmittance
             val vitDRatio = VitaminDModel.vitDRatio(peakElevation)
-            val rawVitDRatePerHour = peakUv * vitDRatio * EXPOSED_BODY_FRACTION
+            val rawVitDRatePerHour = peakUv * vitDRatio * EXPOSED_BODY_FRACTION * effectiveTransmittance
             val effectiveVitDRatePerHour = rawVitDRatePerHour / profile.effectiveAcclimatizationFactor
 
             fun minutesToBurn(meds: Double): Double? =
@@ -79,6 +88,7 @@ data class SkinSummary(
                 peakSolarElevationDeg = peakElevation,
                 effectiveMedUvIndexHours = effectiveMed,
                 sddUvIndexHours = sddBaseline,
+                effectiveTransmittance = effectiveTransmittance,
                 minutesToFirstReddening = minutesToBurn(1.0),
                 minutesToSunburn = minutesToBurn(2.0),
                 minutesToTraceVitD = minutesToVitD(0.25),

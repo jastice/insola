@@ -1,6 +1,8 @@
 package com.insola.uv.domain
 
 import kotlinx.datetime.Instant
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 
 data class GeoPoint(
     val latitude: Double,
@@ -100,6 +102,7 @@ enum class Acclimatization(val factor: Double, val description: String) {
 data class SkinProfile(
     val phototype: SkinSensitivity,
     val acclimatization: Acclimatization = Acclimatization.None,
+    val defaultSpf: Spf = Spf.Off,
 ) {
     /** Tan multiplier actually applied, capped by the phototype's biological ceiling. */
     val effectiveAcclimatizationFactor: Double
@@ -111,5 +114,106 @@ data class SkinProfile(
 
     companion object {
         val Default: SkinProfile = SkinProfile(SkinSensitivity.Default, Acclimatization.Default)
+    }
+}
+
+/**
+ * Sunscreen sun-protection factor. SPF `n` means the labelled product transmits roughly `1/n`
+ * of incident erythemally-weighted UV through to the skin (FDA/EU regulatory definition;
+ * Diffey 2001). [transmittance] is the fraction of UV that gets through and is the value
+ * model integrators multiply against incident UV.
+ *
+ * Caveats baked into [Spf] but worth knowing:
+ *  - Real-world transmittance depends heavily on application thickness; users typically reach
+ *    a third to a half of the labelled SPF (Petersen & Wulf 2014). We assume label SPF here.
+ *  - SPF is defined against the erythemal action spectrum, the same one the UV index carries,
+ *    so a single multiplicative factor applies symmetrically to burn dose and to vitamin-D
+ *    score (Faurschou & Wulf 2007).
+ *  - Filters degrade with sweat, water and time; [SunscreenApplication.MAX_DURATION] is a
+ *    coarse hand-wave at that decay (reapplication advice is "every 2 hours").
+ */
+enum class Spf(val factor: Int, val description: String) {
+    Off(1, "No sunscreen"),
+    Spf15(15, "SPF 15"),
+    Spf30(30, "SPF 30"),
+    Spf50(50, "SPF 50");
+
+    /** Fraction of incident UV reaching the skin (1/[factor]). */
+    val transmittance: Double get() = 1.0 / factor.toDouble()
+
+    companion object {
+        val Default: Spf = Off
+
+        /**
+         * Closest enum entry to an arbitrary numeric transmittance. Used by the UI to pick a
+         * label for a [AttenuationTimeline.Patch] whose transmittance is just a `Double` —
+         * patches are numeric so a future decay model can produce values between the chip
+         * presets without breaking the rendering.
+         */
+        fun nearestForTransmittance(transmittance: Double): Spf =
+            entries.minBy { kotlin.math.abs(it.transmittance - transmittance) }
+    }
+}
+
+/**
+ * Piecewise UV transmittance vs. time, modelling whatever sunscreen the user is wearing.
+ * The dose integrator only ever queries [transmittanceAt] — never an SPF enum — so the model
+ * is freely numeric: today each [Patch] is a 2-hour step at a fixed transmittance, tomorrow
+ * we can swap in a gradual-decay curve by changing only [Patch.transmittanceAt] without
+ * touching the integrator or the ViewModel.
+ *
+ * Patches compose by `min`: when multiple are active at the same instant, the strongest
+ * (smallest transmittance) wins. This is what makes reapplying safe — a later patch can
+ * only ever extend or deepen coverage, never strip a moment an earlier patch already covered.
+ *
+ * The always-on [SkinProfile.defaultSpf] is *not* a patch; the integrator applies it as a
+ * baseline alongside whatever the timeline says.
+ */
+data class AttenuationTimeline(val patches: List<Patch>) {
+
+    /** Strongest (min) transmittance across all patches at [t], or 1.0 if none cover it. */
+    fun transmittanceAt(t: Instant): Double =
+        patches.fold(1.0) { acc, p -> minOf(acc, p.transmittanceAt(t)) }
+
+    /**
+     * Latest patch still covering [t], or null. The UI uses this for the countdown bar /
+     * "active SPF" readout; the integrator does not — it integrates against [transmittanceAt].
+     */
+    fun activeAt(t: Instant): Patch? =
+        patches.filter { it.isActiveAt(t) }.maxByOrNull { it.appliedAt }
+
+    /** Instants where transmittance may step. Used by the integrator to slice exposure intervals. */
+    fun criticalTimes(): List<Instant> =
+        patches.flatMap { listOf(it.appliedAt, it.expiresAt) }
+
+    operator fun plus(patch: Patch): AttenuationTimeline = AttenuationTimeline(patches + patch)
+
+    /**
+     * One patch of attenuation. The current shape is a step — full protection at [transmittance]
+     * for [duration], then bare skin (transmittance 1.0). To model gradual decay later, swap
+     * the body of [transmittanceAt] with a smooth curve; callers only see the scalar result.
+     */
+    data class Patch(
+        val appliedAt: Instant,
+        val transmittance: Double,
+        val duration: Duration = DEFAULT_DURATION,
+    ) {
+        val expiresAt: Instant get() = appliedAt + duration
+
+        fun transmittanceAt(t: Instant): Double {
+            val elapsed = t - appliedAt
+            return if (elapsed >= Duration.ZERO && elapsed < duration) transmittance else 1.0
+        }
+
+        fun isActiveAt(t: Instant): Boolean = t >= appliedAt && t < expiresAt
+
+        fun remainingAt(t: Instant): Duration = (expiresAt - t).coerceAtLeast(Duration.ZERO)
+    }
+
+    companion object {
+        val Empty: AttenuationTimeline = AttenuationTimeline(emptyList())
+
+        /** Default patch lifetime — dermatology's "reapply every 2h" boundary. */
+        val DEFAULT_DURATION: Duration = 2.hours
     }
 }

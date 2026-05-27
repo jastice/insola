@@ -5,9 +5,11 @@ import androidx.lifecycle.viewModelScope
 import com.insola.uv.dev.Fixtures
 import com.insola.uv.dev.Scenario
 import com.insola.uv.domain.Acclimatization
+import com.insola.uv.domain.AttenuationTimeline
 import com.insola.uv.domain.OutdoorSession
 import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.SkinSensitivity
+import com.insola.uv.domain.Spf
 import com.insola.uv.dose.BurnTier
 import com.insola.uv.dose.VitaminDModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +43,16 @@ data class DashboardState(
     val sessions: List<OutdoorSession>,
     val timeOutside: Duration,
     val isCurrentlyOutside: Boolean,
+    /** Full user-built attenuation timeline (every apply event, including expired ones). */
+    val attenuation: AttenuationTimeline,
+    /** Latest patch still covering [now], or null. Drives the countdown bar in the UI. */
+    val activeAttenuation: AttenuationTimeline.Patch?,
+    /**
+     * Numeric UV transmittance actually applied to forward-looking projections at [now] —
+     * the stronger (smaller) of the always-on default SPF transmittance and whatever the
+     * [attenuation] timeline says at [now]. `1.0` means bare skin.
+     */
+    val effectiveTransmittance: Double,
 )
 
 class DashboardViewModel(
@@ -51,12 +63,14 @@ class DashboardViewModel(
     private val hourFlow = MutableStateFlow(wallClockHourOfDay())
     private val profileFlow = MutableStateFlow(SkinProfile.Default)
     private val sessionsFlow = MutableStateFlow<List<OutdoorSession>>(emptyList())
+    private val attenuationFlow = MutableStateFlow(AttenuationTimeline.Empty)
 
     val scenarios: List<Scenario> = Fixtures.all
 
     val state: StateFlow<DashboardState> =
-        combine(scenarioIdFlow, hourFlow, profileFlow, sessionsFlow) { id, hour, profile, sessions ->
-            DashboardCompute.compute(Fixtures.byId(id), hour, profile, sessions)
+        combine(scenarioIdFlow, hourFlow, profileFlow, sessionsFlow, attenuationFlow) {
+            id, hour, profile, sessions, attenuation ->
+            DashboardCompute.compute(Fixtures.byId(id), hour, profile, sessions, attenuation)
         }.stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
@@ -65,6 +79,7 @@ class DashboardViewModel(
                 hourFlow.value,
                 profileFlow.value,
                 sessionsFlow.value,
+                attenuationFlow.value,
             ),
         )
 
@@ -86,6 +101,25 @@ class DashboardViewModel(
 
     fun setAcclimatization(a: Acclimatization) {
         profileFlow.value = profileFlow.value.copy(acclimatization = a)
+    }
+
+    fun setDefaultSpf(spf: Spf) {
+        profileFlow.value = profileFlow.value.copy(defaultSpf = spf)
+    }
+
+    /**
+     * Drop a fresh attenuation patch onto the timeline at [spf]'s transmittance starting at the
+     * current scrubber time. Past patches stay — reapplying composes by `min` per instant so it
+     * never retroactively strips coverage that an earlier patch already provided.
+     */
+    fun applySunscreen(spf: Spf) {
+        if (spf == Spf.Off) return
+        val patch = AttenuationTimeline.Patch(appliedAt = currentNow(), transmittance = spf.transmittance)
+        attenuationFlow.value = attenuationFlow.value + patch
+    }
+
+    fun clearSunscreenApplication() {
+        attenuationFlow.value = AttenuationTimeline.Empty
     }
 
     /**

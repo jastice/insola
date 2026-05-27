@@ -1,6 +1,8 @@
 package com.insola.uv.dashboard
 
 import com.insola.uv.dev.Scenario
+import com.insola.uv.domain.AttenuationTimeline
+import com.insola.uv.domain.ExposureInterval
 import com.insola.uv.domain.OutdoorSession
 import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.uvAt
@@ -9,6 +11,7 @@ import com.insola.uv.dose.BurnTier
 import com.insola.uv.dose.DoseIntegrator
 import com.insola.uv.dose.VitaminDModel
 import com.insola.uv.solar.SolarGeometry
+import kotlinx.datetime.Instant
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -25,16 +28,27 @@ object DashboardCompute {
         hourOfDay: Double,
         profile: SkinProfile,
         sessions: List<OutdoorSession> = emptyList(),
+        attenuation: AttenuationTimeline = AttenuationTimeline.Empty,
     ): DashboardState {
         val now = scenario.hourToInstant(hourOfDay)
         val forecast = scenario.forecast
         val currentUv = forecast.uvAt(now)
         val elevation = SolarGeometry.solarElevationDegrees(scenario.location, now)
 
+        // The effective UV transmittance at any instant is the *minimum* of the always-on
+        // default SPF and whatever the [attenuation] timeline says at that instant — strongest
+        // protection wins. Past-looking integrals slice each exposure interval at the timeline's
+        // step boundaries so a single transmittance applies per slice. Forward-looking
+        // projections (time-to-burn, Skin-tab summary) use the transmittance at `now`.
+        val defaultT = profile.defaultSpf.transmittance
+        val effectiveTransmittanceNow = minOf(defaultT, attenuation.transmittanceAt(now))
+        val activeAttenuation = attenuation.activeAt(now)
+
         val effectiveIntervals = sessions
             .map { it.toInterval(now) }
             .filter { it.end > it.start && it.start < now }
             .map { it.copy(end = minOf(it.end, now)) }
+            .flatMap { splitByAttenuation(it, defaultT, attenuation) }
         val timeOutside = effectiveIntervals
             .sumOf { (it.end - it.start).inWholeMilliseconds }
             .milliseconds
@@ -48,7 +62,7 @@ object DashboardCompute {
             now = now,
             forecast = forecast,
             profile = profile,
-            assumedFactor = 1.0,
+            assumedFactor = effectiveTransmittanceNow,
             alreadyAccumulated = accumulated,
             thresholdMultiplier = 1.0,
         )
@@ -56,7 +70,7 @@ object DashboardCompute {
             now = now,
             forecast = forecast,
             profile = profile,
-            assumedFactor = 1.0,
+            assumedFactor = effectiveTransmittanceNow,
             alreadyAccumulated = accumulated,
             thresholdMultiplier = 2.0,
         )
@@ -66,7 +80,7 @@ object DashboardCompute {
             skinExposedFraction = 0.25,
         )
         val vitDBucket = VitaminDModel.bucket(vitDScore, profile)
-        val skinSummary = SkinSummary.compute(scenario, profile)
+        val skinSummary = SkinSummary.compute(scenario, profile, effectiveTransmittanceNow)
         val isCurrentlyOutside = sessions.lastOrNull()?.let { it.isOpen && it.start <= now } == true
         return DashboardState(
             scenario = scenario,
@@ -88,6 +102,35 @@ object DashboardCompute {
             sessions = sessions,
             timeOutside = timeOutside,
             isCurrentlyOutside = isCurrentlyOutside,
+            attenuation = attenuation,
+            activeAttenuation = activeAttenuation,
+            effectiveTransmittance = effectiveTransmittanceNow,
         )
+    }
+
+    /**
+     * Slice [interval] at the timeline's step boundaries so each sub-interval integrates against
+     * a single transmittance. Per slice the effective value is `min(defaultT, timeline@a)` —
+     * strongest protection wins. The current timeline shape is piecewise constant, so evaluating
+     * at the slice start `a` is exact; a future smooth-decay timeline would need finer slicing
+     * (or per-slice average) but the integrator API doesn't change.
+     */
+    private fun splitByAttenuation(
+        interval: ExposureInterval,
+        defaultT: Double,
+        attenuation: AttenuationTimeline,
+    ): List<ExposureInterval> {
+        if (attenuation.patches.isEmpty()) {
+            return listOf(interval.copy(exposureFactor = interval.exposureFactor * defaultT))
+        }
+        val cuts = (sequenceOf(interval.start, interval.end) + attenuation.criticalTimes().asSequence())
+            .map { it.coerceIn(interval.start, interval.end) }
+            .distinct()
+            .sorted()
+            .toList()
+        return cuts.zipWithNext { a, b ->
+            val t = minOf(defaultT, attenuation.transmittanceAt(a))
+            interval.copy(start = a, end = b, exposureFactor = interval.exposureFactor * t)
+        }.filter { it.end > it.start }
     }
 }

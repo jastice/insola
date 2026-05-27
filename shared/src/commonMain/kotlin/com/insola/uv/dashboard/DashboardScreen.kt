@@ -23,6 +23,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
@@ -46,10 +47,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.insola.uv.domain.Acclimatization
+import com.insola.uv.domain.AttenuationTimeline
 import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.SkinSensitivity
+import com.insola.uv.domain.Spf
 import com.insola.uv.dose.BurnTier
 import com.insola.uv.dose.VitaminDModel
+import kotlinx.datetime.Instant
 import kotlin.time.Duration
 
 @Composable
@@ -113,6 +117,16 @@ private fun DashboardContent(
                             onToggleOutside = viewModel::toggleOutside,
                         )
                     }
+                    item {
+                        ApplySunscreenCard(
+                            defaultSpf = state.profile.defaultSpf,
+                            activePatch = state.activeAttenuation,
+                            hasAnyPatch = state.attenuation.patches.isNotEmpty(),
+                            now = state.now,
+                            onApply = viewModel::applySunscreen,
+                            onClear = viewModel::clearSunscreenApplication,
+                        )
+                    }
                     item { SunBudgetCard(state) }
                     if (state.sessions.isNotEmpty()) {
                         item { OutdoorLogCard(state, viewModel::removeSession) }
@@ -124,6 +138,12 @@ private fun DashboardContent(
                         AcclimatizationPicker(
                             profile = state.profile,
                             onSelect = viewModel::setAcclimatization,
+                        )
+                    }
+                    item {
+                        DefaultSunscreenCard(
+                            defaultSpf = state.profile.defaultSpf,
+                            onDefaultChange = viewModel::setDefaultSpf,
                         )
                     }
                     item { SkinSummaryChart(state.skinSummary) }
@@ -511,6 +531,157 @@ private fun AcclimatizationPicker(
             Text(
                 profile.acclimatization.description + " · MED ×${formatNumber(applied, 1)}" + capNote,
                 style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DefaultSunscreenCard(
+    defaultSpf: Spf,
+    onDefaultChange: (Spf) -> Unit,
+) {
+    Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Default sunscreen", style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.height(4.dp))
+            SpfChipRow(selected = defaultSpf, onSelect = onDefaultChange)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (defaultSpf == Spf.Off) "No baseline protection — bare skin assumed."
+                else "Always-on baseline: SPF ${defaultSpf.factor} (×${defaultSpf.factor} burn budget).",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+/** SPF levels offered for ad-hoc application — `Off` is for the always-on default only. */
+private val ApplySpfChoices: List<Spf> = listOf(Spf.Spf15, Spf.Spf30, Spf.Spf50)
+
+@Composable
+private fun ApplySunscreenCard(
+    defaultSpf: Spf,
+    activePatch: AttenuationTimeline.Patch?,
+    hasAnyPatch: Boolean,
+    now: Instant,
+    onApply: (Spf) -> Unit,
+    onClear: () -> Unit,
+) {
+    var applySelection by rememberSaveable {
+        mutableStateOf(activePatch?.let { Spf.nearestForTransmittance(it.transmittance) } ?: Spf.Spf30)
+    }
+    val isActive = activePatch != null
+    val remaining = activePatch?.remainingAt(now) ?: Duration.ZERO
+    val patchDuration = activePatch?.duration ?: AttenuationTimeline.DEFAULT_DURATION
+    val fraction = (remaining / patchDuration).toFloat().coerceIn(0f, 1f)
+
+    Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("SPF", style = MaterialTheme.typography.labelLarge)
+                ApplySpfChoices.forEach { spf ->
+                    val isSelected = spf == applySelection
+                    val accent = MaterialTheme.colorScheme.onBackground
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { applySelection = spf },
+                        label = { Text(spf.factor.toString()) },
+                        modifier = if (isSelected) Modifier.scale(1.1f) else Modifier,
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = isSelected,
+                            borderColor = Color.Transparent,
+                            selectedBorderColor = accent,
+                            borderWidth = 0.dp,
+                            selectedBorderWidth = 1.5.dp,
+                        ),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { onApply(applySelection) }) {
+                    Text(if (isActive) "Re-apply" else "Apply")
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            RemainingTimeBar(
+                fraction = fraction,
+                activePatch = activePatch,
+                hasAnyPatch = hasAnyPatch,
+                remaining = remaining,
+                defaultSpf = defaultSpf,
+                onClear = onClear,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RemainingTimeBar(
+    fraction: Float,
+    activePatch: AttenuationTimeline.Patch?,
+    hasAnyPatch: Boolean,
+    remaining: Duration,
+    defaultSpf: Spf,
+    onClear: () -> Unit,
+) {
+    LinearProgressIndicator(
+        progress = { fraction },
+        modifier = Modifier.fillMaxWidth().height(6.dp),
+    )
+    Spacer(Modifier.height(4.dp))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = when {
+                activePatch != null -> {
+                    val label = Spf.nearestForTransmittance(activePatch.transmittance).factor
+                    "SPF $label · ${formatDuration(remaining)} remaining"
+                }
+                hasAnyPatch ->
+                    "Expired — fell back to " +
+                        if (defaultSpf == Spf.Off) "no protection" else "default SPF ${defaultSpf.factor}"
+                else -> "Tap Apply for ${formatDuration(AttenuationTimeline.DEFAULT_DURATION)} of protection"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f),
+        )
+        if (hasAnyPatch) {
+            TextButton(onClick = onClear) { Text("Clear") }
+        }
+    }
+}
+
+@Composable
+private fun SpfChipRow(selected: Spf, onSelect: (Spf) -> Unit) {
+    val accent = MaterialTheme.colorScheme.onBackground
+    Row(
+        modifier = Modifier
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Spf.entries.forEach { spf ->
+            val isSelected = spf == selected
+            FilterChip(
+                selected = isSelected,
+                onClick = { onSelect(spf) },
+                label = { Text(if (spf == Spf.Off) "Off" else "SPF ${spf.factor}") },
+                modifier = if (isSelected) Modifier.scale(1.1f) else Modifier,
+                border = FilterChipDefaults.filterChipBorder(
+                    enabled = true,
+                    selected = isSelected,
+                    borderColor = Color.Transparent,
+                    selectedBorderColor = accent,
+                    borderWidth = 0.dp,
+                    selectedBorderWidth = 1.5.dp,
+                ),
             )
         }
     }
