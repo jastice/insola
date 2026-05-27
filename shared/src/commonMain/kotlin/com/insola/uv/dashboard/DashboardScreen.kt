@@ -127,6 +127,7 @@ private fun DashboardContent(
                             defaultSpf = state.profile.defaultSpf,
                             timeline = state.attenuation,
                             activePatch = state.activeAttenuation,
+                            advisor = state.reapplyAdvisor,
                             now = state.now,
                             onApply = viewModel::applySunscreen,
                             onClear = viewModel::clearSunscreenApplication,
@@ -569,6 +570,7 @@ private fun ApplySunscreenCard(
     defaultSpf: Spf,
     timeline: AttenuationTimeline,
     activePatch: AttenuationTimeline.Patch?,
+    advisor: ReapplyAdvisor,
     now: Instant,
     onApply: (Spf) -> Unit,
     onClear: () -> Unit,
@@ -578,7 +580,7 @@ private fun ApplySunscreenCard(
     }
     val isActive = activePatch != null
     val hasAnyPatch = timeline.patches.isNotEmpty()
-    val nudgeReapply = hasAnyPatch && isInReapplyZone(timeline, defaultSpf, now)
+    val nudgeReapply = hasAnyPatch && isInReapplyZone(timeline, defaultSpf, advisor, now)
 
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
@@ -617,7 +619,7 @@ private fun ApplySunscreenCard(
                 )
             }
             Spacer(Modifier.height(10.dp))
-            AttenuationChart(timeline = timeline, defaultSpf = defaultSpf, now = now)
+            AttenuationChart(timeline = timeline, defaultSpf = defaultSpf, advisor = advisor, now = now)
         }
     }
 }

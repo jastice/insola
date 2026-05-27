@@ -53,6 +53,12 @@ data class DashboardState(
      * [attenuation] timeline says at [now]. `1.0` means bare skin.
      */
     val effectiveTransmittance: Double,
+    /**
+     * Forward-looking "top up soon" gauge derived from the UV forecast and remaining burn
+     * budget. The chart draws its threshold curve as the red zone, and the Apply button
+     * glows when current effective SPF sits below the threshold. See [ReapplyAdvisor].
+     */
+    val reapplyAdvisor: ReapplyAdvisor,
 )
 
 class DashboardViewModel(

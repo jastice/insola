@@ -82,6 +82,10 @@ object DashboardCompute {
         val vitDBucket = VitaminDModel.bucket(vitDScore, profile)
         val skinSummary = SkinSummary.compute(scenario, profile, effectiveTransmittanceNow)
         val isCurrentlyOutside = sessions.lastOrNull()?.let { it.isOpen && it.start <= now } == true
+        val reapplyAdvisor = ReapplyAdvisor(
+            forecast = forecast,
+            safeDose = (medThreshold - accumulated).coerceAtLeast(0.0),
+        )
         return DashboardState(
             scenario = scenario,
             hourOfDay = hourOfDay,
@@ -105,6 +109,7 @@ object DashboardCompute {
             attenuation = attenuation,
             activeAttenuation = activeAttenuation,
             effectiveTransmittance = effectiveTransmittanceNow,
+            reapplyAdvisor = reapplyAdvisor,
         )
     }
 

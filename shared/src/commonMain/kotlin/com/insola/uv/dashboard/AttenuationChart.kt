@@ -44,27 +44,32 @@ private const val MIN_SPF: Double = 1.0
 /** Minimum y-axis ceiling so a "default Off + no patches" chart still has visible vertical space. */
 private const val MIN_AXIS_TOP: Double = 5.0
 
-/**
- * Effective-SPF floor for the "reapply soon" nudge. Below this the chart paints a translucent
- * red band and the Apply button glows. Chosen so a typical SPF 30 application (initial effective
- * SPF ~5.5 at thickness 0.5) crosses it roughly around the 2 h nominal reapply mark.
- */
-internal const val REAPPLY_THRESHOLD_SPF: Double = 3.0
+/** Marker value for "budget already spent → threshold is +∞" — clamped to plot top when drawn. */
+private const val BUDGET_SPENT_SENTINEL: Double = 1e6
 
-/** True if the effective SPF at [now] sits in the reapply zone. */
-internal fun isInReapplyZone(timeline: AttenuationTimeline, defaultSpf: Spf, now: Instant): Boolean =
-    effectiveSpfAt(timeline, defaultSpf.transmittance, now) < REAPPLY_THRESHOLD_SPF
+/** True when current effective SPF is below the advisor's threshold curve at [now]. */
+internal fun isInReapplyZone(
+    timeline: AttenuationTimeline,
+    defaultSpf: Spf,
+    advisor: ReapplyAdvisor,
+    now: Instant,
+): Boolean = advisor.needsTopUp(effectiveSpfAt(timeline, defaultSpf.transmittance, now), now)
 
 /**
  * Effective SPF over the next [WINDOW] starting at [now]. Combines the always-on [defaultSpf]
  * with whatever the [timeline] says at each instant via `min(defaultT, timelineT)` — the same
  * composition the integrator uses, so the chart reads as the actual protection feeding the
  * burn meter. Apply events are marked with thin vertical lines.
+ *
+ * The translucent red band shows [advisor]'s threshold curve `S(t) = ∫UV/safeDose over the next
+ * horizon at t`. Where the SPF curve dips below the band, the user would run out of safe outdoor
+ * time within the horizon without a top-up.
  */
 @Composable
 internal fun AttenuationChart(
     timeline: AttenuationTimeline,
     defaultSpf: Spf,
+    advisor: ReapplyAdvisor,
     now: Instant,
     modifier: Modifier = Modifier,
 ) {
@@ -77,7 +82,14 @@ internal fun AttenuationChart(
     val textMeasurer = rememberTextMeasurer()
 
     val samples = remember(timeline, defaultSpf, now) { sampleEffectiveSpf(timeline, defaultSpf, now) }
-    val axisTop = remember(samples) { axisTopFor(samples.map { it.spf }) }
+    val thresholdCurve = remember(advisor, now) { sampleThresholdSpf(advisor, now) }
+    // Include the threshold curve in axis-top so a high-UV midday threshold isn't clipped off
+    // the chart and the curve relationship reads honestly. Capped infinities (budget already
+    // spent) are filtered out so they don't blow the axis.
+    val axisTop = remember(samples, thresholdCurve) {
+        val finiteThresholds = thresholdCurve.map { it.spf }.filter { it < BUDGET_SPENT_SENTINEL }
+        axisTopFor(samples.map { it.spf } + finiteThresholds)
+    }
     val applyMarkers = remember(timeline, now) { applyMarkersInsideWindow(timeline, now) }
 
     Box(modifier = modifier.fillMaxWidth().height(72.dp)) {
@@ -93,6 +105,7 @@ internal fun AttenuationChart(
             val plotBottom = topPad + plotH
 
             drawReapplyZone(
+                thresholdCurve = thresholdCurve,
                 plotLeft = plotLeft,
                 plotBottom = plotBottom,
                 plotW = plotW,
@@ -155,6 +168,18 @@ private fun effectiveSpfAt(timeline: AttenuationTimeline, defaultT: Double, t: I
     val transmittance = minOf(defaultT, timeline.transmittanceAt(t))
     if (transmittance <= 0.0) return MIN_SPF
     return (1.0 / transmittance).coerceAtLeast(MIN_SPF)
+}
+
+private fun sampleThresholdSpf(advisor: ReapplyAdvisor, now: Instant): List<TimedSpf> {
+    val windowHours = WINDOW.toDouble(DurationUnit.HOURS)
+    val stepHours = SAMPLE_STEP.toDouble(DurationUnit.HOURS)
+    val n = ceil(windowHours / stepHours).toInt()
+    return (0..n).map { i ->
+        val dt = (i * stepHours).coerceAtMost(windowHours)
+        val raw = advisor.thresholdSpfAt(now + dt.hours)
+        val capped = if (raw.isFinite()) raw else BUDGET_SPENT_SENTINEL
+        TimedSpf(dt, capped.coerceAtLeast(MIN_SPF))
+    }
 }
 
 private fun axisTopFor(spfSamples: List<Double>): Double {
@@ -250,6 +275,7 @@ private fun DrawScope.drawApplyMarkers(
 }
 
 private fun DrawScope.drawReapplyZone(
+    thresholdCurve: List<TimedSpf>,
     plotLeft: Float,
     plotBottom: Float,
     plotW: Float,
@@ -257,16 +283,23 @@ private fun DrawScope.drawReapplyZone(
     axisTop: Double,
     color: Color,
 ) {
+    if (thresholdCurve.isEmpty()) return
+    val windowHours = WINDOW.toDouble(DurationUnit.HOURS)
     val range = (axisTop - MIN_SPF).coerceAtLeast(1e-9)
-    val topFrac = ((REAPPLY_THRESHOLD_SPF - MIN_SPF) / range).coerceIn(0.0, 1.0).toFloat()
-    if (topFrac <= 0f) return
-    val zoneH = plotH * topFrac
-    drawRect(
-        color = color,
-        topLeft = Offset(plotLeft, plotBottom - zoneH),
-        size = Size(plotW, zoneH),
-        style = Fill,
-    )
+    fun xFor(elapsed: Double) = plotLeft + plotW * (elapsed / windowHours).toFloat()
+    fun yFor(spf: Double) = plotBottom - plotH * ((spf - MIN_SPF) / range).toFloat().coerceIn(0f, 1f)
+
+    val path = Path().apply {
+        // Start at baseline-left, trace the threshold curve across the window, then close back
+        // down to baseline-right so the area below the curve is filled.
+        val first = thresholdCurve.first()
+        val last = thresholdCurve.last()
+        moveTo(xFor(first.elapsedHours), plotBottom)
+        thresholdCurve.forEach { lineTo(xFor(it.elapsedHours), yFor(it.spf)) }
+        lineTo(xFor(last.elapsedHours), plotBottom)
+        close()
+    }
+    drawPath(path, color = color, style = Fill)
 }
 
 private fun DrawScope.drawCurve(
