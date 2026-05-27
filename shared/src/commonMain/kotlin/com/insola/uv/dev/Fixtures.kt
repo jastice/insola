@@ -3,7 +3,10 @@ package com.insola.uv.dev
 import com.insola.uv.domain.GeoPoint
 import com.insola.uv.domain.UvForecast
 import com.insola.uv.domain.UvSample
+import com.insola.uv.solar.SolarGeometry
 import kotlinx.datetime.Instant
+import kotlin.math.PI
+import kotlin.math.sin
 import kotlin.time.Duration.Companion.hours
 
 /**
@@ -38,71 +41,99 @@ data class Scenario(
 
 object Fixtures {
 
-    val equatorialNoon = Scenario(
+    /**
+     * Synthesize 25 hourly UV samples whose shape tracks the **actual** solar elevation at the
+     * location, normalized so the day's peak hits [peakUvIndex]. Hours where the sun is below the
+     * horizon are zero. The shape is the simplest physically defensible one: UV ∝ sin(elev).
+     *
+     * Why not hand-author the curves: dayStart is "local-clock midnight" (nominal timezone offset),
+     * but within a timezone the actual solar noon depends on longitude. Singapore (UTC+8, lon
+     * 103.82°E) hits solar noon at ~13:12 local; Reykjavík (UTC+0, lon -21.94°E) at ~13:26;
+     * Paris (UTC+2, lon 2.35°E) at ~13:52. A curve hand-authored to peak at "hour 12 local" can
+     * sit 1–2 h before real solar noon, which silently miscalibrates [BurnModel] (uses raw UV)
+     * against [VitaminDModel] (weights UV by sin-of-elevation): the morning UV samples line up
+     * with hours where the sun is still near or below the horizon, so burn integrates phantom
+     * dose while vit-D correctly stays at zero.
+     */
+    private fun clearSkyUv(
+        location: GeoPoint,
+        dayStart: Instant,
+        peakUvIndex: Double,
+    ): List<Double> {
+        val sinElev = (0..24).map { hour ->
+            val e = SolarGeometry.solarElevationDegrees(location, dayStart + hour.hours)
+            if (e <= 0.0) 0.0 else sin(e * PI / 180.0)
+        }
+        val peak = sinElev.max()
+        if (peak == 0.0) return List(25) { 0.0 }
+        return sinElev.map { it / peak * peakUvIndex }
+    }
+
+    private fun clearSkyScenario(
+        id: String,
+        name: String,
+        description: String,
+        location: GeoPoint,
+        dayStart: Instant,
+        peakUvIndex: Double,
+        cloudFactor: (Int) -> Double = { 1.0 },
+    ): Scenario = Scenario(
+        id = id,
+        name = name,
+        description = description,
+        location = location,
+        dayStart = dayStart,
+        hourlyUv = clearSkyUv(location, dayStart, peakUvIndex).mapIndexed { h, uv -> uv * cloudFactor(h) },
+    )
+
+    val equatorialNoon: Scenario = clearSkyScenario(
         id = "equator",
         name = "Equatorial noon",
         description = "Singapore equinox, clear-sky peak UV 12",
         location = GeoPoint(1.35, 103.82),
         // Singapore = UTC+8. Local midnight 2026-03-20 = 2026-03-19T16:00 UTC.
         dayStart = Instant.parse("2026-03-19T16:00:00Z"),
-        hourlyUv = listOf(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.5, 2.0, 5.0, 8.0, 10.5, 12.0,
-            12.0, 11.5, 9.5, 6.5, 3.0, 1.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        ),
+        peakUvIndex = 12.0,
     )
 
-    val berlinSummer = Scenario(
+    val berlinSummer: Scenario = clearSkyScenario(
         id = "berlin",
         name = "Mid-latitude summer",
-        description = "Berlin solstice, peak UV 7, slow afternoon decay",
+        description = "Berlin solstice, clear-sky peak UV 7",
         location = GeoPoint(52.52, 13.40),
         // Berlin in June = UTC+2. Local midnight 2026-06-21 = 2026-06-20T22:00 UTC.
         dayStart = Instant.parse("2026-06-20T22:00:00Z"),
-        hourlyUv = listOf(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.2,
-            0.8, 1.8, 3.0, 4.5, 6.0, 7.0,
-            7.0, 7.0, 6.5, 5.5, 4.0, 2.5,
-            1.2, 0.5, 0.1, 0.0, 0.0, 0.0, 0.0,
-        ),
+        peakUvIndex = 7.0,
     )
 
-    val reykjavikWinter = Scenario(
+    val reykjavikWinter: Scenario = clearSkyScenario(
         id = "reykjavik",
         name = "Arctic winter",
         description = "Reykjavík December, peak UV 1, narrow daylight",
         location = GeoPoint(64.13, -21.94),
-        // Iceland = UTC year-round. Curve total ~2.0 UV-idx·h — under Type I's 2.2 MED so a full
-        // day of continuous outdoor exposure still doesn't burn the model.
+        // Iceland = UTC year-round. Sun barely clears the horizon; the synthesized UV curve is
+        // tiny except for the few hours around solar noon.
         dayStart = Instant.parse("2026-12-21T00:00:00Z"),
-        hourlyUv = listOf(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.5,
-            1.0, 0.5, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        ),
+        peakUvIndex = 1.0,
     )
 
-    val cloudyAfternoon = Scenario(
+    val cloudyAfternoon: Scenario = clearSkyScenario(
         id = "cloudy",
         name = "Cloudy afternoon",
-        description = "Paris June, flat UV 3 → drops to 1 after 14:00",
+        description = "Paris June, light morning cloud thickens after 14:00 local",
         location = GeoPoint(48.85, 2.35),
         // Paris in June = UTC+2. Local midnight 2026-06-21 = 2026-06-20T22:00 UTC.
         dayStart = Instant.parse("2026-06-20T22:00:00Z"),
-        hourlyUv = listOf(
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            1.0, 2.0, 3.0, 3.0, 3.0, 3.0,
-            3.0, 3.0, 1.0, 1.0, 1.0, 1.0,
-            0.5, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0,
-        ),
+        peakUvIndex = 6.0,
+        // Light haze through the morning (~½ clear-sky), heavier overcast moves in at 14:00 local.
+        cloudFactor = { hour -> if (hour < 14) 0.5 else 0.2 },
     )
 
     /**
      * Rising vs falling pair share the same total area (one is the reverse of the other) but
      * deliver dose at very different times of day — the cleanest way to see time-integration
-     * actually working.
+     * actually working. Intentionally NOT a clear-sky shape: the asymmetric morning-vs-afternoon
+     * loading is the whole point.
      */
     private val mirrorCurve = listOf(
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
