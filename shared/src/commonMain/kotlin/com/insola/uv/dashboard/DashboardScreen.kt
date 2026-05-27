@@ -20,12 +20,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -45,6 +47,36 @@ import kotlin.time.Duration
 @Composable
 fun DashboardScreen(viewModel: DashboardViewModel, modifier: Modifier = Modifier) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val sky = skyColors(state.solarElevationDeg)
+    val scheme = MaterialTheme.colorScheme.copy(
+        background = sky.background,
+        onBackground = sky.onBackground,
+        surface = sky.surface,
+        surfaceContainerLowest = sky.surface,
+        surfaceContainerLow = sky.surface,
+        surfaceContainer = sky.surface,
+        surfaceContainerHigh = sky.surface,
+        surfaceContainerHighest = sky.surface,
+        // Tonal-elevation overlay (Card et al. mix surfaceTint into surface based on elevation).
+        // Default surfaceTint is primary purple, which drowns our hue back to gray; null it out.
+        // (Leaving surfaceVariant alone so the bar tracks stay visibly distinct.)
+        surfaceTint = Color.Transparent,
+    )
+    MaterialTheme(colorScheme = scheme) {
+        // Text outside a Surface (e.g. the scenario description) reads LocalContentColor, which
+        // defaults to black. Provide the bg-contrast color so labels stay readable at night.
+        CompositionLocalProvider(LocalContentColor provides sky.onBackground) {
+            DashboardContent(state, viewModel, modifier.background(sky.background))
+        }
+    }
+}
+
+@Composable
+private fun DashboardContent(
+    state: DashboardState,
+    viewModel: DashboardViewModel,
+    modifier: Modifier,
+) {
     LazyColumn(
         modifier = modifier.padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
