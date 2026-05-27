@@ -2,7 +2,6 @@ package com.insola.uv.domain
 
 import kotlinx.datetime.Instant
 import kotlin.math.exp
-import kotlin.math.pow
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
@@ -209,10 +208,12 @@ data class AttenuationTimeline(val patches: List<Patch>) {
      *   `transmittance(t) = 1 / P(t)`
      *
      * The initial effective SPF `S` is *not* the label SPF — it is the label derated for the
-     * fact that users almost never apply the 2 mg/cm² lab-standard thickness. With Wulf's
-     * exponential thickness law `S_eff = label^thickness` (Faurschou & Wulf 2007; Petersen &
-     * Wulf 2014), a typical [TYPICAL_APPLICATION_THICKNESS] = 0.5 mg/cm²/lab application
-     * drops SPF-30 to ≈ √30 ≈ 5.5.
+     * fact that users almost never apply the 2 mg/cm² lab-standard thickness. We use the linear
+     * thickness law (Diffey 1997) `S_eff = 1 + (S_label − 1) · thickness`, which interpolates
+     * the excess protection factor between bare skin at `thickness = 0` and the labeled SPF at
+     * the lab dose. At [TYPICAL_APPLICATION_THICKNESS] = 0.5 this gives SPF 30 → 15.5,
+     * matching everyday experience. See `SunscreenModel.md` for why we picked the linear law
+     * over Faurschou & Wulf's exponential.
      *
      * Half-life [NOMINAL_HALF_LIFE_HOURS] = 2 h tracks the dermatology "reapply every 2 h"
      * recommendation (Diffey 2001) — the time after which effective protection has dropped
@@ -236,11 +237,12 @@ data class AttenuationTimeline(val patches: List<Patch>) {
          */
         val wearMultiplier: Double = 1.0,
     ) {
-        /** Effective initial SPF after the application-thickness derate. */
+        /** Effective initial SPF after the linear application-thickness derate. */
         val initialSpf: Double
             get() {
                 val label = 1.0 / labelTransmittance
-                return label.pow(applicationThickness.coerceIn(0.0, 1.0))
+                val t = applicationThickness.coerceIn(0.0, 1.0)
+                return 1.0 + (label - 1.0) * t
             }
 
         /** UV transmittance at the moment of application — `1 / [initialSpf]`. */

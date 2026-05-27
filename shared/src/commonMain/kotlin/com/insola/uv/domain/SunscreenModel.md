@@ -80,34 +80,56 @@ Autier et al. 2007). The headline number — "users apply about a quarter
 to a half of the recommended amount" — is essentially universal.
 
 The relationship between applied thickness `d` (as a fraction of the
-2 mg/cm² lab dose) and effective SPF is empirically *exponential*:
+2 mg/cm² lab dose) and effective SPF is modelled **linearly** in the
+*excess* protection factor:
 
 ```
-S_effective = S_label ^ d
+S_effective = 1 + (S_label − 1) · d
 ```
 
-[Faurschou & Wulf 2007](https://pubmed.ncbi.nlm.nih.gov/17493070/)
-confirmed this in vivo on UV-B exposure, and Wulf's group has reproduced
-the shape across multiple later studies (Petersen & Wulf 2014; Schalka &
-Reis 2011). Plugging in the typical 0.5 thickness:
+At `d = 0` (no sunscreen) `S_effective = 1` (bare skin); at `d = 1` (lab
+dose) `S_effective = S_label` (the bottle's number, as advertised). In
+between we interpolate the excess `(S − 1)` proportionally to applied
+thickness. This is the form [Diffey 1997](https://pubmed.ncbi.nlm.nih.gov/9216526/)
+used in his original "amount applied" model and is also Wulf's first-order
+approximation before they fit the steeper exponential. Plugging in the
+typical 0.5 thickness:
 
 | Label SPF | Effective SPF at thickness = 0.5 |
 | --------: | -------------------------------: |
-|        15 |                            ~3.9  |
-|        30 |                            ~5.5  |
-|        50 |                            ~7.1  |
-|       100 |                           ~10.0  |
+|        15 |                             8.0  |
+|        30 |                            15.5  |
+|        50 |                            25.5  |
+|       100 |                            50.5  |
 
-Note that the curve is concave in label-SPF: doubling SPF on the bottle
-gives only ~1.3× more real-world protection at typical thickness. That
-also matches the "early reapplication or use of very high SPF (70-100)
-may partly compensate" finding of Petersen & Wulf.
+### Why linear instead of the exponential
 
-There is some scientific debate — [Osterwalder 2014](https://onlinelibrary.wiley.com/doi/10.1111/phpp.12112)
-notes the exponential fit was derived against UV-B and the relationship
-may be more concave in UV-A. Insola uses the UV-B-anchored exponential
-because the burn integrator and vit-D score are both erythemally
-weighted (UV-B dominant).
+The competing **exponential** law `S_eff = S_label ^ d`
+([Faurschou & Wulf 2007](https://pubmed.ncbi.nlm.nih.gov/17493070/),
+reproduced by [Schalka & Reis 2011](https://pubmed.ncbi.nlm.nih.gov/21603814/))
+fits Wulf's in-vivo UV-B data better at low thickness, predicting SPF 30
+→ √30 ≈ 5.5 at `d = 0.5`. Two reasons we don't use it:
+
+  - **It is openly debated.** [Osterwalder 2014](https://onlinelibrary.wiley.com/doi/10.1111/phpp.12112)
+    pointed out the exponential fit was derived against UV-B narrowband
+    sources only, and that broad-spectrum solar exposure produces a
+    flatter dose-response. The shape of the curve at typical use thickness
+    is genuinely uncertain in the literature.
+  - **It double-counts pessimism in our stack.** Combined with the 2 h
+    `NOMINAL_HALF_LIFE_HOURS` (itself a behavioural reapply guideline
+    with built-in safety margin, not a kinetic measurement), the
+    exponential law turned out to predict that SPF 30 applied normally
+    in tropical sun would burn skin type III within ~45 min. That does
+    not match either Insola's authors' lived experience or the
+    population-level outcome the AAD's "every 2 h" guidance is calibrated
+    around (which assumes SPF 30 *is* keeping users mostly safe even
+    when reapplied late).
+
+The linear law lands in the middle of the literature's plausible range,
+matches lived experience at typical sun exposures, and still bakes in a
+real derate at the default 0.5 thickness — SPF 30 reads as effective SPF
+15, not 30. Users who really do apply the full 2 mg/cm² can pass
+`applicationThickness = 1.0` per patch and recover the labelled SPF.
 
 ### Wear — `wearMultiplier`
 
@@ -231,7 +253,8 @@ the burn meter. Showing both numbers as a single bar would mislead.
 ### Application thickness
 
 - [Petersen & Wulf 2014 — Application of sunscreen, theory and reality (Photodermatol Photoimmunol Photomed)](https://pubmed.ncbi.nlm.nih.gov/24313722/) — review of field-application thickness; typical 0.39–1.0 mg/cm², median ~0.5 mg/cm²; consumer education and high-SPF reapplication can partially compensate.
-- [Faurschou & Wulf 2007 — The relation between sun protection factor and amount of suncreen applied in vivo (Br J Dermatol)](https://pubmed.ncbi.nlm.nih.gov/17493070/) — in-vivo confirmation of `S_effective = S_label ^ thickness_fraction`.
+- [Diffey 1997 — When should sunscreen be reapplied? (J Am Acad Dermatol)](https://pubmed.ncbi.nlm.nih.gov/9216526/) — origin of the linear "excess SPF scales with applied amount" model and the early-reapplication compensation argument.
+- [Faurschou & Wulf 2007 — The relation between sun protection factor and amount of suncreen applied in vivo (Br J Dermatol)](https://pubmed.ncbi.nlm.nih.gov/17493070/) — competing in-vivo exponential fit `S_effective = S_label ^ thickness_fraction` (UV-B narrowband, not what we use).
 - [Bech-Thomsen & Wulf 1992 — Sunbathers' application of sunscreen is probably inadequate (Photodermatol Photoimmunol Photomed)](https://pubmed.ncbi.nlm.nih.gov/1492336/) — observational study, average application ≈ 0.5 mg/cm².
 - [Schalka & Reis 2011 — Sun protection factor: meaning and controversies (An Bras Dermatol)](https://pubmed.ncbi.nlm.nih.gov/21603814/) — review of SPF measurement methodology and field discrepancy.
 - [Autier et al. 2007 — Sunscreen use and increased duration of intentional sun exposure: still a burning issue (Int J Cancer)](https://pubmed.ncbi.nlm.nih.gov/17131312/) — behavioural-compensation angle on real-world SPF.

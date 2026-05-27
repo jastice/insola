@@ -411,9 +411,10 @@ class DashboardComputeTest {
 
     @Test
     fun realisticApplicationThickness_deratesLabeledSpf() {
-        // Default thickness 0.5 (Petersen & Wulf 2014 field median): labeled SPF 50 should
-        // deliver effective SPF ≈ √50 ≈ 7.07 at the moment of application, *not* the labeled
-        // 1/50 transmittance the bottle promises.
+        // Default thickness 0.5 (Petersen & Wulf 2014 field median) with the linear thickness
+        // law (Diffey 1997) `S_eff = 1 + (S_label − 1) · thickness`: labeled SPF 50 should
+        // deliver effective SPF 25.5 at the moment of application, *not* the labeled 1/50
+        // transmittance the bottle promises.
         val scenario = Fixtures.byId("equator")
         val now = scenario.hourToInstant(13.0)
         val s = DashboardCompute.compute(
@@ -424,7 +425,7 @@ class DashboardComputeTest {
                 AttenuationTimeline.Patch(now, Spf.Spf50.transmittance),
             )),
         )
-        val expectedInitialSpf = kotlin.math.sqrt(50.0)
+        val expectedInitialSpf = 1.0 + (50.0 - 1.0) * 0.5
         assertEquals(1.0 / expectedInitialSpf, s.effectiveTransmittance, 1e-9)
     }
 
