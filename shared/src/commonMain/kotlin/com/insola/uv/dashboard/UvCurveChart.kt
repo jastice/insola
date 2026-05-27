@@ -64,8 +64,8 @@ private fun Modifier.scrubHour(onHourChange: (Double) -> Unit): Modifier = point
 /**
  * 24-hour UV projection + outdoor timeline + interactive time scrubber.
  *
- * - Filled UV curve colored by a vertical gradient that follows the WHO UV-index bands
- *   (green ≤2, yellow 3-5, orange 6-7, red 8-10, purple ≥11).
+ * - Filled UV curve colored by a smooth vertical gradient anchored at the WHO UV-index
+ *   thresholds (green 0, yellow 3, orange 6, red 8, purple 11).
  * - Y-axis ticks at the band breakpoints.
  * - Inline overlay shows the UV value + solar elevation at the scrubbed hour.
  * - Bottom timeline strip: gray indoor, green outdoor.
@@ -258,18 +258,15 @@ private fun DrawScope.drawSessionBands(
 
 /**
  * Builds a vertical gradient brush mapping y-position to UV band color. High UV at top (purple/red),
- * low UV at bottom (green). Sharp-ish band transitions via near-duplicate stops.
+ * low UV at bottom (green). Colors are anchored at the WHO band thresholds and blend continuously
+ * between them.
  */
 private fun buildUvGradient(yMax: Double): Brush {
     val raw = listOf(
         0.0 to UvGreen,
-        2.999 to UvGreen,
         3.0 to UvYellow,
-        5.999 to UvYellow,
         6.0 to UvOrange,
-        7.999 to UvOrange,
         8.0 to UvRed,
-        10.999 to UvRed,
         11.0 to UvPurple,
     ).filter { it.first <= yMax }
     val withTop = if (raw.last().first < yMax) raw + (yMax to uvBandColor(yMax)) else raw

@@ -56,10 +56,12 @@ fun DashboardScreen(viewModel: DashboardViewModel, modifier: Modifier = Modifier
                 state = state,
                 onHourChange = viewModel::setHourOfDay,
                 onToggleOutside = viewModel::toggleOutside,
-                onRemoveSession = viewModel::removeSession,
             )
         }
         item { SunBudgetCard(state) }
+        if (state.sessions.isNotEmpty()) {
+            item { OutdoorLogCard(state, viewModel::removeSession) }
+        }
         item { SensitivityPicker(state.sensitivity, viewModel::setSensitivity) }
     }
 }
@@ -93,7 +95,6 @@ private fun UvTodayCard(
     state: DashboardState,
     onHourChange: (Double) -> Unit,
     onToggleOutside: () -> Unit,
-    onRemoveSession: (Int) -> Unit,
 ) {
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
@@ -147,10 +148,17 @@ private fun UvTodayCard(
             ) {
                 Text(if (state.isCurrentlyOutside) "Go inside" else "Go outside")
             }
-            if (state.sessions.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                SessionList(state, onRemoveSession)
-            }
+        }
+    }
+}
+
+@Composable
+private fun OutdoorLogCard(state: DashboardState, onRemove: (Int) -> Unit) {
+    Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Outdoor log", style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.height(8.dp))
+            SessionList(state, onRemove)
         }
     }
 }
