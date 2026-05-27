@@ -23,12 +23,17 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -120,8 +125,8 @@ private fun DashboardContent(
                     item {
                         ApplySunscreenCard(
                             defaultSpf = state.profile.defaultSpf,
+                            timeline = state.attenuation,
                             activePatch = state.activeAttenuation,
-                            hasAnyPatch = state.attenuation.patches.isNotEmpty(),
                             now = state.now,
                             onApply = viewModel::applySunscreen,
                             onClear = viewModel::clearSunscreenApplication,
@@ -562,8 +567,8 @@ private val ApplySpfChoices: List<Spf> = listOf(Spf.Spf15, Spf.Spf30, Spf.Spf50)
 @Composable
 private fun ApplySunscreenCard(
     defaultSpf: Spf,
+    timeline: AttenuationTimeline,
     activePatch: AttenuationTimeline.Patch?,
-    hasAnyPatch: Boolean,
     now: Instant,
     onApply: (Spf) -> Unit,
     onClear: () -> Unit,
@@ -572,8 +577,8 @@ private fun ApplySunscreenCard(
         mutableStateOf(activePatch?.let { Spf.nearestForTransmittance(it.labelTransmittance) } ?: Spf.Spf30)
     }
     val isActive = activePatch != null
-    val remaining = activePatch?.remainingHintAt(now) ?: Duration.ZERO
-    val fraction = (remaining / AttenuationTimeline.REAPPLY_HINT_DURATION).toFloat().coerceIn(0f, 1f)
+    val hasAnyPatch = timeline.patches.isNotEmpty()
+    val nudgeReapply = hasAnyPatch && isInReapplyZone(timeline, defaultSpf, now)
 
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
@@ -602,58 +607,45 @@ private fun ApplySunscreenCard(
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = { onApply(applySelection) }) {
-                    Text(if (isActive) "Re-apply" else "Apply")
+                if (hasAnyPatch) {
+                    TextButton(onClick = onClear) { Text("Clear") }
                 }
+                ApplyButton(
+                    label = if (isActive) "Re-apply" else "Apply",
+                    glow = nudgeReapply,
+                    onClick = { onApply(applySelection) },
+                )
             }
-            Spacer(Modifier.height(8.dp))
-            RemainingTimeBar(
-                fraction = fraction,
-                activePatch = activePatch,
-                hasAnyPatch = hasAnyPatch,
-                remaining = remaining,
-                defaultSpf = defaultSpf,
-                onClear = onClear,
-            )
+            Spacer(Modifier.height(10.dp))
+            AttenuationChart(timeline = timeline, defaultSpf = defaultSpf, now = now)
         }
     }
 }
 
 @Composable
-private fun RemainingTimeBar(
-    fraction: Float,
-    activePatch: AttenuationTimeline.Patch?,
-    hasAnyPatch: Boolean,
-    remaining: Duration,
-    defaultSpf: Spf,
-    onClear: () -> Unit,
-) {
-    LinearProgressIndicator(
-        progress = { fraction },
-        modifier = Modifier.fillMaxWidth().height(6.dp),
+private fun ApplyButton(label: String, glow: Boolean, onClick: () -> Unit) {
+    if (!glow) {
+        TextButton(onClick = onClick) { Text(label) }
+        return
+    }
+    val transition = rememberInfiniteTransition(label = "reapplyGlow")
+    val pulse by transition.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "reapplyGlowPulse",
     )
-    Spacer(Modifier.height(4.dp))
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.error.copy(alpha = pulse),
+            contentColor = MaterialTheme.colorScheme.onError,
+        ),
     ) {
-        Text(
-            text = when {
-                activePatch != null -> {
-                    val label = Spf.nearestForTransmittance(activePatch.labelTransmittance).factor
-                    "SPF $label · ${formatDuration(remaining)} remaining"
-                }
-                hasAnyPatch ->
-                    "Expired — fell back to " +
-                        if (defaultSpf == Spf.Off) "no protection" else "default SPF ${defaultSpf.factor}"
-                else -> "Tap Apply for ${formatDuration(AttenuationTimeline.REAPPLY_HINT_DURATION)} of protection"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(1f),
-        )
-        if (hasAnyPatch) {
-            TextButton(onClick = onClear) { Text("Clear") }
-        }
+        Text(label)
     }
 }
 
