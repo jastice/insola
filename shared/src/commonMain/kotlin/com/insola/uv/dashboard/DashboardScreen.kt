@@ -16,14 +16,17 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -49,6 +52,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.insola.uv.domain.Acclimatization
@@ -108,8 +112,8 @@ private fun DashboardContent(
             }
         }
         LazyColumn(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             when (selectedTab) {
                 DashboardTab.Day -> {
@@ -120,6 +124,7 @@ private fun DashboardContent(
                             state = state,
                             onHourChange = viewModel::setHourOfDay,
                             onToggleOutside = viewModel::toggleOutside,
+                            onRemoveSession = viewModel::removeSession,
                         )
                     }
                     item {
@@ -134,9 +139,6 @@ private fun DashboardContent(
                         )
                     }
                     item { SunBudgetCard(state) }
-                    if (state.sessions.isNotEmpty()) {
-                        item { OutdoorLogCard(state, viewModel::removeSession) }
-                    }
                 }
                 DashboardTab.Skin -> {
                     item { PhototypePicker(state.profile.phototype, viewModel::setPhototype) }
@@ -183,32 +185,33 @@ private fun ScenarioPicker(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun UvTodayCard(
     state: DashboardState,
     onHourChange: (Double) -> Unit,
     onToggleOutside: () -> Unit,
+    onRemoveSession: (Int) -> Unit,
 ) {
+    var showLog by remember { mutableStateOf(false) }
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
+        Column(Modifier.padding(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("UV today", style = MaterialTheme.typography.labelMedium)
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        formatClock(state.hourOfDay),
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    if (state.timeOutside.inWholeMinutes > 0) {
-                        Text(
-                            "${formatDuration(state.timeOutside)} outside",
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    }
-                }
+                // Clock lives in the chart readout ("Sun 33° • 17:00") — don't repeat it here.
+                Text("UV today", style = MaterialTheme.typography.titleSmall)
+                FilterChip(
+                    selected = state.isCurrentlyOutside,
+                    onClick = onToggleOutside,
+                    label = { Text(if (state.isCurrentlyOutside) "Outside" else "Inside") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = OutdoorGreen,
+                        selectedLabelColor = Color.White,
+                    ),
+                )
             }
             Spacer(Modifier.height(8.dp))
             UvCurveChart(
@@ -229,29 +232,31 @@ private fun UvTodayCard(
             ) {
                 LegendDot(OutdoorGreen, "Outdoor")
                 LegendDot(IndoorGray.copy(alpha = 0.55f), "Indoor")
-            }
-            Spacer(Modifier.height(8.dp))
-            Button(
-                onClick = onToggleOutside,
-                modifier = Modifier.fillMaxWidth(),
-                colors = if (state.isCurrentlyOutside) ButtonDefaults.buttonColors(
-                    containerColor = OutdoorGreen,
-                    contentColor = Color.White,
-                ) else ButtonDefaults.buttonColors(),
-            ) {
-                Text(if (state.isCurrentlyOutside) "Go inside" else "Go outside")
+                // The session intervals are already drawn as green bands on the timeline above;
+                // the chip opens a sheet for the exact times + delete. Outlined chip = tappable.
+                if (state.sessions.isNotEmpty()) {
+                    Spacer(Modifier.weight(1f))
+                    val outsideLabel = if (state.timeOutside.inWholeMinutes > 0) {
+                        "${formatDuration(state.timeOutside)} outside"
+                    } else {
+                        "Outdoor log"
+                    }
+                    AssistChip(
+                        onClick = { showLog = true },
+                        label = { Text("$outsideLabel ›") },
+                    )
+                }
             }
         }
     }
-}
 
-@Composable
-private fun OutdoorLogCard(state: DashboardState, onRemove: (Int) -> Unit) {
-    Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
-            Text("Outdoor log", style = MaterialTheme.typography.labelMedium)
-            Spacer(Modifier.height(8.dp))
-            SessionList(state, onRemove)
+    if (showLog) {
+        ModalBottomSheet(onDismissRequest = { showLog = false }) {
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
+                Text("Outdoor log", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                SessionList(state, onRemoveSession)
+            }
         }
     }
 }
@@ -298,8 +303,8 @@ private fun LegendDot(color: Color, label: String) {
 @Composable
 private fun SunBudgetCard(state: DashboardState) {
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
-            Text("Today's sun", style = MaterialTheme.typography.labelMedium)
+        Column(Modifier.padding(12.dp)) {
+            Text("Today's sun", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(10.dp))
 
             Row(
@@ -441,14 +446,14 @@ private fun VitaminDBar(score: Double, profile: SkinProfile) {
 @Composable
 private fun PhototypePicker(selected: SkinSensitivity, onSelect: (SkinSensitivity) -> Unit) {
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
+        Column(Modifier.padding(12.dp)) {
             Text("Skin type (Fitzpatrick)", style = MaterialTheme.typography.labelMedium)
             Spacer(Modifier.height(4.dp))
             Row(
                 modifier = Modifier
-                    .horizontalScroll(rememberScrollState())
+                    .fillMaxWidth()
                     .padding(horizontal = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 val accent = MaterialTheme.colorScheme.onBackground
                 SkinSensitivity.entries.forEach { type ->
@@ -458,8 +463,15 @@ private fun PhototypePicker(selected: SkinSensitivity, onSelect: (SkinSensitivit
                     FilterChip(
                         selected = isSelected,
                         onClick = { onSelect(type) },
-                        label = { Text(type.name) },
-                        modifier = if (isSelected) Modifier.scale(1.1f) else Modifier,
+                        label = {
+                            Text(
+                                type.name,
+                                maxLines = 1,
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Center,
+                            )
+                        },
+                        modifier = if (isSelected) Modifier.weight(1f).scale(1.1f) else Modifier.weight(1f),
                         colors = FilterChipDefaults.filterChipColors(
                             containerColor = tone,
                             selectedContainerColor = tone,
@@ -489,7 +501,7 @@ private fun AcclimatizationPicker(
     onSelect: (Acclimatization) -> Unit,
 ) {
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
+        Column(Modifier.padding(12.dp)) {
             Text("Tan", style = MaterialTheme.typography.labelMedium)
             Spacer(Modifier.height(4.dp))
             Row(
@@ -548,7 +560,7 @@ private fun DefaultSunscreenCard(
     onDefaultChange: (Spf) -> Unit,
 ) {
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
+        Column(Modifier.padding(12.dp)) {
             Text("Default sunscreen", style = MaterialTheme.typography.labelMedium)
             Spacer(Modifier.height(4.dp))
             SpfChipRow(selected = defaultSpf, onSelect = onDefaultChange)
@@ -578,12 +590,11 @@ private fun ApplySunscreenCard(
     var applySelection by rememberSaveable {
         mutableStateOf(activePatch?.let { Spf.nearestForTransmittance(it.labelTransmittance) } ?: Spf.Spf30)
     }
-    val isActive = activePatch != null
     val hasAnyPatch = timeline.patches.isNotEmpty()
     val nudgeReapply = hasAnyPatch && isInReapplyZone(timeline, defaultSpf, advisor, now)
 
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
+        Column(Modifier.padding(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -613,7 +624,7 @@ private fun ApplySunscreenCard(
                     TextButton(onClick = onClear) { Text("Clear") }
                 }
                 ApplyButton(
-                    label = if (isActive) "Re-apply" else "Apply",
+                    label = "Apply",
                     glow = nudgeReapply,
                     onClick = { onApply(applySelection) },
                 )

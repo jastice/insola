@@ -3,7 +3,8 @@
 
     <application
         android:label="Insola"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Insola">
         <activity
             android:name=".MainActivity"
             android:exported="true"

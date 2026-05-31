@@ -168,7 +168,7 @@ fun UvCurveChart(
         ) {
             Text(
                 text = "UV ${formatNumber(currentUv, 1)}",
-                style = MaterialTheme.typography.headlineSmall,
+                style = MaterialTheme.typography.headlineMedium,
                 color = uvBandColor(currentUv),
             )
             Text(

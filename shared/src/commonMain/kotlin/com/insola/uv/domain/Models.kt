@@ -105,7 +105,6 @@ enum class Acclimatization(val factor: Double, val description: String) {
 data class SkinProfile(
     val phototype: SkinSensitivity,
     val acclimatization: Acclimatization = Acclimatization.None,
-    val defaultSpf: Spf = Spf.Off,
 ) {
     /** Tan multiplier actually applied, capped by the phototype's biological ceiling. */
     val effectiveAcclimatizationFactor: Double
@@ -168,8 +167,8 @@ enum class Spf(val factor: Int, val description: String) {
  * (smallest transmittance) wins. This is what makes reapplying safe — a later patch can
  * only ever extend or deepen coverage, never strip a moment an earlier patch already covered.
  *
- * The always-on [SkinProfile.defaultSpf] is *not* a patch; the integrator applies it as a
- * baseline alongside whatever the timeline says.
+ * There is no always-on baseline: bare skin (`transmittance = 1.0`) is the floor, and only
+ * applied (decaying) patches lift protection above it.
  *
  * See `SunscreenModel.md` for the decay model, the real-world reduction factors baked into
  * the defaults, and the literature behind both.

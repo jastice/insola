@@ -35,20 +35,18 @@ object DashboardCompute {
         val currentUv = forecast.uvAt(now)
         val elevation = SolarGeometry.solarElevationDegrees(scenario.location, now)
 
-        // The effective UV transmittance at any instant is the *minimum* of the always-on
-        // default SPF and whatever the [attenuation] timeline says at that instant — strongest
-        // protection wins. Past-looking integrals slice each exposure interval at the timeline's
-        // step boundaries so a single transmittance applies per slice. Forward-looking
-        // projections (time-to-burn, Skin-tab summary) use the transmittance at `now`.
-        val defaultT = profile.defaultSpf.transmittance
-        val effectiveTransmittanceNow = minOf(defaultT, attenuation.transmittanceAt(now))
+        // The effective UV transmittance at any instant is whatever the [attenuation] timeline
+        // says — bare skin (1.0) where no patch covers it. Past-looking integrals slice each
+        // exposure interval at the timeline's step boundaries so a single transmittance applies
+        // per slice. Forward-looking projections (time-to-burn) use the transmittance at `now`.
+        val effectiveTransmittanceNow = attenuation.transmittanceAt(now)
         val activeAttenuation = attenuation.activeAt(now)
 
         val effectiveIntervals = sessions
             .map { it.toInterval(now) }
             .filter { it.end > it.start && it.start < now }
             .map { it.copy(end = minOf(it.end, now)) }
-            .flatMap { splitByAttenuation(it, defaultT, attenuation) }
+            .flatMap { splitByAttenuation(it, attenuation) }
         val timeOutside = effectiveIntervals
             .sumOf { (it.end - it.start).inWholeMilliseconds }
             .milliseconds

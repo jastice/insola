@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Edge-to-edge Compose host. NoActionBar drops the framework ActionBar (which otherwise
+      renders android:label + the app icon as a black band above our content). The window
+      background/insets are owned by Compose via enableEdgeToEdge().
+    -->
+    <style name="Theme.Insola" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
