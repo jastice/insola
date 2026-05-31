@@ -97,25 +97,62 @@ class SkinSummaryTest {
     }
 
     @Test
-    fun effectiveSpf_stretchesBothBurnAndVitDByFactor() {
-        // SPF transmits 1/factor of UV. Both burn and vit-D rates ride the same erythemal
-        // weighting, so all minutes-to-X should scale up by SPF factor symmetrically.
-        val profile = SkinProfile(SkinSensitivity.III)
-        val bare = SkinSummary.compute(Fixtures.byId("equator"), profile, effectiveTransmittance = 1.0)
-        val spf30 = SkinSummary.compute(
-            Fixtures.byId("equator"), profile, effectiveTransmittance = Spf.Spf30.transmittance,
+    fun previewSpf_extendsBurnTime_butDecayKeepsItUnderFlatFactor() {
+        // The SPF what-if integrates a single *decaying* patch against constant peak UV, so a
+        // chosen SPF must delay reddening — monotonically by strength — yet buy far less than a
+        // flat ×SPF would, because protection fades back toward bare skin as you wear it.
+        val summary = SkinSummary.compute(Fixtures.byId("equator"), SkinProfile(SkinSensitivity.III))
+        val bare = summary.minutesToFirstReddening
+        assertNotNull(bare)
+
+        // `Off` reproduces the bare-skin number exactly.
+        val off = summary.protectedMinutesToBurn(Spf.Off, 1.0)
+        assertNotNull(off)
+        assertEquals(bare, off, 1e-6)
+
+        val spf15 = summary.protectedMinutesToBurn(Spf.Spf15, 1.0)
+        val spf30 = summary.protectedMinutesToBurn(Spf.Spf30, 1.0)
+        val spf50 = summary.protectedMinutesToBurn(Spf.Spf50, 1.0)
+        assertNotNull(spf15); assertNotNull(spf30); assertNotNull(spf50)
+
+        // Each step up delays reddening further...
+        assertTrue(bare < spf15, "any SPF should push reddening later than bare (bare=$bare, spf15=$spf15)")
+        assertTrue(spf15 < spf30, "stronger SPF should delay further (spf15=$spf15, spf30=$spf30)")
+        assertTrue(spf30 < spf50, "stronger SPF should delay further (spf30=$spf30, spf50=$spf50)")
+
+        // ...but the decaying patch buys well under a flat ×factor of extra time.
+        assertTrue(
+            spf30 < bare * 30.0,
+            "decay must keep the gain well under ×30 (ratio=${spf30 / bare})",
         )
-        assertEquals(Spf.Spf30.transmittance, spf30.effectiveTransmittance, 1e-12)
+    }
 
-        val bareFirst = bare.minutesToFirstReddening
-        val spfFirst = spf30.minutesToFirstReddening
-        assertNotNull(bareFirst); assertNotNull(spfFirst)
-        assertEquals(bareFirst * 30.0, spfFirst, 1e-3)
+    @Test
+    fun atUvLevel_rescalesBoundariesInverselyWithUv_andMatchesComputeAtThatUv() {
+        // The slider recomputes the card at an arbitrary UV, holding the day's sun angle fixed.
+        // Bare times scale inversely with UV, and the result equals computing fresh at that UV.
+        val summary = SkinSummary.compute(Fixtures.byId("equator"), SkinProfile(SkinSensitivity.III))
+        val peak = summary.peakUv
+        assertTrue(peak > 8.0)
 
-        val bareAdequate = bare.minutesToAdequateVitD
-        val spfAdequate = spf30.minutesToAdequateVitD
-        assertNotNull(bareAdequate); assertNotNull(spfAdequate)
-        assertEquals(bareAdequate * 30.0, spfAdequate, 1e-3)
+        // Identity at the peak.
+        assertEquals(summary, summary.atUvLevel(peak))
+
+        // Halving UV doubles every bare boundary (rates are linear in UV, threshold fixed).
+        val half = summary.atUvLevel(peak / 2.0)
+        assertEquals(peak / 2.0, half.peakUv, 1e-9)
+        assertEquals(summary.minutesToFirstReddening!! * 2.0, half.minutesToFirstReddening!!, 1e-6)
+        assertEquals(summary.minutesToAdequateVitD!! * 2.0, half.minutesToAdequateVitD!!, 1e-6)
+        // Sun angle (and thus the vit-D weighting) is unchanged by the slider.
+        assertEquals(summary.peakSolarElevationDeg, half.peakSolarElevationDeg, 1e-12)
+
+        // A stronger UV makes the decay-aware SPF preview burn sooner than at the weaker level.
+        val bright = summary.atUvLevel(peak)
+        val dim = summary.atUvLevel(peak / 3.0)
+        assertTrue(bright.protectedMinutesToBurn(Spf.Spf30, 1.0)!! < dim.protectedMinutesToBurn(Spf.Spf30, 1.0)!!)
+
+        // UV 0 → nothing is ever reached.
+        assertEquals(null, summary.atUvLevel(0.0).minutesToFirstReddening)
     }
 
     @Test

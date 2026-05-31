@@ -24,7 +24,6 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.insola.uv.domain.AttenuationTimeline
-import com.insola.uv.domain.Spf
 import kotlinx.datetime.Instant
 import kotlin.math.ceil
 import kotlin.time.Duration
@@ -50,16 +49,14 @@ private const val BUDGET_SPENT_SENTINEL: Double = 1e6
 /** True when current effective SPF is below the advisor's threshold curve at [now]. */
 internal fun isInReapplyZone(
     timeline: AttenuationTimeline,
-    defaultSpf: Spf,
     advisor: ReapplyAdvisor,
     now: Instant,
-): Boolean = advisor.needsTopUp(effectiveSpfAt(timeline, defaultSpf.transmittance, now), now)
+): Boolean = advisor.needsTopUp(effectiveSpfAt(timeline, now), now)
 
 /**
- * Effective SPF over the next [WINDOW] starting at [now]. Combines the always-on [defaultSpf]
- * with whatever the [timeline] says at each instant via `min(defaultT, timelineT)` — the same
- * composition the integrator uses, so the chart reads as the actual protection feeding the
- * burn meter. Apply events are marked with thin vertical lines.
+ * Effective SPF over the next [WINDOW] starting at [now], read straight from the [timeline] at
+ * each instant (bare skin = SPF 1 where no patch covers it) — the same protection the integrator
+ * sees feeding the burn meter. Apply events are marked with thin vertical lines.
  *
  * The translucent red band shows [advisor]'s threshold curve `S(t) = ∫UV/safeDose over the next
  * horizon at t`. Where the SPF curve dips below the band, the user would run out of safe outdoor
@@ -68,7 +65,6 @@ internal fun isInReapplyZone(
 @Composable
 internal fun AttenuationChart(
     timeline: AttenuationTimeline,
-    defaultSpf: Spf,
     advisor: ReapplyAdvisor,
     now: Instant,
     modifier: Modifier = Modifier,
@@ -81,7 +77,7 @@ internal fun AttenuationChart(
     val labelStyle = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, color = onSurface)
     val textMeasurer = rememberTextMeasurer()
 
-    val samples = remember(timeline, defaultSpf, now) { sampleEffectiveSpf(timeline, defaultSpf, now) }
+    val samples = remember(timeline, now) { sampleEffectiveSpf(timeline, now) }
     val thresholdCurve = remember(advisor, now) { sampleThresholdSpf(advisor, now) }
     // Include the threshold curve in axis-top so a high-UV midday threshold isn't clipped off
     // the chart and the curve relationship reads honestly. Capped infinities (budget already
@@ -151,21 +147,19 @@ private data class TimedSpf(val elapsedHours: Double, val spf: Double)
 
 private fun sampleEffectiveSpf(
     timeline: AttenuationTimeline,
-    defaultSpf: Spf,
     now: Instant,
 ): List<TimedSpf> {
     val windowHours = WINDOW.toDouble(DurationUnit.HOURS)
     val stepHours = SAMPLE_STEP.toDouble(DurationUnit.HOURS)
     val n = ceil(windowHours / stepHours).toInt()
-    val defaultT = defaultSpf.transmittance
     return (0..n).map { i ->
         val dt = (i * stepHours).coerceAtMost(windowHours)
-        TimedSpf(dt, effectiveSpfAt(timeline, defaultT, now + dt.hours))
+        TimedSpf(dt, effectiveSpfAt(timeline, now + dt.hours))
     }
 }
 
-private fun effectiveSpfAt(timeline: AttenuationTimeline, defaultT: Double, t: Instant): Double {
-    val transmittance = minOf(defaultT, timeline.transmittanceAt(t))
+private fun effectiveSpfAt(timeline: AttenuationTimeline, t: Instant): Double {
+    val transmittance = timeline.transmittanceAt(t)
     if (transmittance <= 0.0) return MIN_SPF
     return (1.0 / transmittance).coerceAtLeast(MIN_SPF)
 }

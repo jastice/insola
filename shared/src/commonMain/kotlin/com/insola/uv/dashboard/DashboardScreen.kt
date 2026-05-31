@@ -40,6 +40,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -101,6 +102,13 @@ private fun DashboardContent(
     modifier: Modifier,
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(DashboardTab.Day) }
+    // Skin-tab "what-if" — a pure preview that stretches the sundial's burn ticks; it never
+    // feeds the Day-tab integrals (those are driven only by applied, decaying patches). The SPF
+    // choice is scenario-independent; the UV level resets to each scenario's peak.
+    var previewSpf by rememberSaveable { mutableStateOf(Spf.Off) }
+    var previewUv by remember(state.scenario.id) {
+        mutableFloatStateOf(state.skinSummary.peakUv.toFloat())
+    }
     Column(modifier = modifier) {
         PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
             DashboardTab.entries.forEach { tab ->
@@ -129,7 +137,6 @@ private fun DashboardContent(
                     }
                     item {
                         ApplySunscreenCard(
-                            defaultSpf = state.profile.defaultSpf,
                             timeline = state.attenuation,
                             activePatch = state.activeAttenuation,
                             advisor = state.reapplyAdvisor,
@@ -149,12 +156,14 @@ private fun DashboardContent(
                         )
                     }
                     item {
-                        DefaultSunscreenCard(
-                            defaultSpf = state.profile.defaultSpf,
-                            onDefaultChange = viewModel::setDefaultSpf,
+                        SkinSummaryChart(
+                            summary = state.skinSummary,
+                            previewSpf = previewSpf,
+                            onPreviewSpfChange = { previewSpf = it },
+                            previewUv = previewUv,
+                            onPreviewUvChange = { previewUv = it },
                         )
                     }
-                    item { SkinSummaryChart(state.skinSummary) }
                 }
             }
         }
@@ -554,32 +563,11 @@ private fun AcclimatizationPicker(
     }
 }
 
-@Composable
-private fun DefaultSunscreenCard(
-    defaultSpf: Spf,
-    onDefaultChange: (Spf) -> Unit,
-) {
-    Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp)) {
-            Text("Default sunscreen", style = MaterialTheme.typography.labelMedium)
-            Spacer(Modifier.height(4.dp))
-            SpfChipRow(selected = defaultSpf, onSelect = onDefaultChange)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                if (defaultSpf == Spf.Off) "No baseline protection — bare skin assumed."
-                else "Always-on baseline: SPF ${defaultSpf.factor} (×${defaultSpf.factor} burn budget).",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-}
-
-/** SPF levels offered for ad-hoc application — `Off` is for the always-on default only. */
+/** SPF levels offered for ad-hoc application — bare skin (`Off`) is never an "apply" choice. */
 private val ApplySpfChoices: List<Spf> = listOf(Spf.Spf15, Spf.Spf30, Spf.Spf50)
 
 @Composable
 private fun ApplySunscreenCard(
-    defaultSpf: Spf,
     timeline: AttenuationTimeline,
     activePatch: AttenuationTimeline.Patch?,
     advisor: ReapplyAdvisor,
@@ -591,7 +579,7 @@ private fun ApplySunscreenCard(
         mutableStateOf(activePatch?.let { Spf.nearestForTransmittance(it.labelTransmittance) } ?: Spf.Spf30)
     }
     val hasAnyPatch = timeline.patches.isNotEmpty()
-    val nudgeReapply = hasAnyPatch && isInReapplyZone(timeline, defaultSpf, advisor, now)
+    val nudgeReapply = hasAnyPatch && isInReapplyZone(timeline, advisor, now)
 
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
@@ -630,7 +618,7 @@ private fun ApplySunscreenCard(
                 )
             }
             Spacer(Modifier.height(10.dp))
-            AttenuationChart(timeline = timeline, defaultSpf = defaultSpf, advisor = advisor, now = now)
+            AttenuationChart(timeline = timeline, advisor = advisor, now = now)
         }
     }
 }
@@ -662,32 +650,4 @@ private fun ApplyButton(label: String, glow: Boolean, onClick: () -> Unit) {
     }
 }
 
-@Composable
-private fun SpfChipRow(selected: Spf, onSelect: (Spf) -> Unit) {
-    val accent = MaterialTheme.colorScheme.onBackground
-    Row(
-        modifier = Modifier
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Spf.entries.forEach { spf ->
-            val isSelected = spf == selected
-            FilterChip(
-                selected = isSelected,
-                onClick = { onSelect(spf) },
-                label = { Text(if (spf == Spf.Off) "Off" else "SPF ${spf.factor}") },
-                modifier = if (isSelected) Modifier.scale(1.1f) else Modifier,
-                border = FilterChipDefaults.filterChipBorder(
-                    enabled = true,
-                    selected = isSelected,
-                    borderColor = Color.Transparent,
-                    selectedBorderColor = accent,
-                    borderWidth = 0.dp,
-                    selectedBorderWidth = 1.5.dp,
-                ),
-            )
-        }
-    }
-}
 

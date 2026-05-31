@@ -78,7 +78,9 @@ object DashboardCompute {
             skinExposedFraction = 0.25,
         )
         val vitDBucket = VitaminDModel.bucket(vitDScore, profile)
-        val skinSummary = SkinSummary.compute(scenario, profile, effectiveTransmittanceNow)
+        // The Skin-tab sundial is a "your bare skin at today's peak UV" reference; the SPF
+        // what-if preview is layered on top in the UI, so the summary itself stays bare.
+        val skinSummary = SkinSummary.compute(scenario, profile)
         val isCurrentlyOutside = sessions.lastOrNull()?.let { it.isOpen && it.start <= now } == true
         val reapplyAdvisor = ReapplyAdvisor(
             forecast = forecast,
@@ -113,19 +115,16 @@ object DashboardCompute {
 
     /**
      * Slice [interval] at the timeline's sampling grid so each sub-interval integrates against
-     * a single transmittance. Per slice the effective value is `min(defaultT, timeline@mid)` —
-     * strongest protection wins. Evaluating at the slice midpoint makes the piecewise-constant
-     * approximation second-order accurate against the smooth decay curve, so 5-min steps stay
-     * within < 0.5 % of the exact integral for typical SPF values.
+     * a single transmittance read from the timeline at the slice midpoint (bare skin where no
+     * patch covers it). Evaluating at the midpoint makes the piecewise-constant approximation
+     * second-order accurate against the smooth decay curve, so 5-min steps stay within < 0.5 %
+     * of the exact integral for typical SPF values.
      */
     private fun splitByAttenuation(
         interval: ExposureInterval,
-        defaultT: Double,
         attenuation: AttenuationTimeline,
     ): List<ExposureInterval> {
-        if (attenuation.patches.isEmpty()) {
-            return listOf(interval.copy(exposureFactor = interval.exposureFactor * defaultT))
-        }
+        if (attenuation.patches.isEmpty()) return listOf(interval)
         val cuts = (sequenceOf(interval.start, interval.end) + attenuation.criticalTimes().asSequence())
             .map { it.coerceIn(interval.start, interval.end) }
             .distinct()
@@ -133,7 +132,7 @@ object DashboardCompute {
             .toList()
         return cuts.zipWithNext { a, b ->
             val mid = a + (b - a) / 2
-            val t = minOf(defaultT, attenuation.transmittanceAt(mid))
+            val t = attenuation.transmittanceAt(mid)
             interval.copy(start = a, end = b, exposureFactor = interval.exposureFactor * t)
         }.filter { it.end > it.start }
     }

@@ -1,8 +1,10 @@
 package com.insola.uv.dashboard
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,12 +13,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -28,6 +38,7 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.insola.uv.domain.Spf
 import com.insola.uv.dose.BurnTier
 import kotlin.math.PI
 import kotlin.math.cos
@@ -40,6 +51,13 @@ private val LabelGap = 6.dp
 /** Outer burn dial is 6h end-to-end; inner vit-D dial is 30 min end-to-end. */
 private const val BURN_DIAL_MINUTES = 360.0
 private const val VITD_DIAL_MINUTES = 30.0
+
+/**
+ * Top of the UV slider. ~13 is about the strongest UV index seen at sea level in the deep
+ * tropics; the rare higher readings need extreme altitude, so 13 is a sane real-world ceiling
+ * that still comfortably contains every scenario's peak.
+ */
+private const val MAX_REALISTIC_UV: Float = 13f
 
 /** Drop ticks landing within this many minutes of an already-kept tick to avoid label crowding. */
 private const val TICK_MIN_GAP_MINUTES = 1.0
@@ -64,20 +82,37 @@ private const val GRADIENT_SEGMENTS = 180
  * Both scales are fixed so visual comparison across scenarios stays honest. Move the
  * phototype or acclimatization pickers and the tick positions slide live; the arc lengths
  * never change.
+ *
+ * **UV slider.** [previewUv] picks the UV index the whole card is evaluated at — the dials and
+ * captions recompute live via [SkinSummary.atUvLevel]. It defaults to the day's peak (the
+ * [summary] as computed) and the "Peak" button snaps back to it.
+ *
+ * **SPF what-if.** The dial is drawn for *bare* skin. Picking a [previewSpf] above `Bare`
+ * overlays a [ShieldBlue] "protected reddening" tick further along the burn arc and shades the
+ * gap you'd gain — computed through the decaying-patch model ([SkinSummary.protectedMinutesToBurn]),
+ * so the payoff is honestly *less* than a flat ×SPF.
  */
 @Composable
-internal fun SkinSummaryChart(summary: SkinSummary, modifier: Modifier = Modifier) {
+internal fun SkinSummaryChart(
+    summary: SkinSummary,
+    previewSpf: Spf,
+    onPreviewSpfChange: (Spf) -> Unit,
+    previewUv: Float,
+    onPreviewUvChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val peakUv = summary.peakUv
+    val display = summary.atUvLevel(previewUv.toDouble())
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
-            Text("At today's peak UV", style = MaterialTheme.typography.labelMedium)
+            Text("Time outside at UV ${formatNumber(previewUv.toDouble(), 1)}", style = MaterialTheme.typography.labelMedium)
             Spacer(Modifier.height(2.dp))
             Text(
-                "Peak UV ${formatNumber(summary.peakUv, 1)} · " +
-                    "MED ${formatNumber(summary.effectiveMedUvIndexHours, 1)} UV-idx·h",
+                "MED ${formatNumber(display.effectiveMedUvIndexHours, 1)} UV-idx·h",
                 style = MaterialTheme.typography.bodySmall,
             )
 
-            if (summary.peakUv <= 0.0) {
+            if (peakUv <= 0.0) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "No daytime UV in this scenario — neither burn nor vitamin-D apply.",
@@ -86,10 +121,88 @@ internal fun SkinSummaryChart(summary: SkinSummary, modifier: Modifier = Modifie
                 return@Column
             }
 
+            Spacer(Modifier.height(4.dp))
+            UvLevelSlider(value = previewUv, peakUv = peakUv, onChange = onPreviewUvChange)
+            Spacer(Modifier.height(8.dp))
+            PreviewSpfChips(previewSpf, onPreviewSpfChange)
             Spacer(Modifier.height(12.dp))
-            ConcentricSundial(summary)
+            ConcentricSundial(display, previewSpf)
             Spacer(Modifier.height(10.dp))
-            SafeWindowCaption(summary)
+            SpfEffectCaption(display, previewSpf)
+        }
+    }
+}
+
+/**
+ * UV-index slider spanning 0 to [MAX_REALISTIC_UV]. The track is painted with the app's WHO/EPA
+ * UV-band gradient (green → yellow → orange → red → purple) so the position itself reads as a UV
+ * level. The trailing "Peak" button is both the day-peak reference and a one-tap reset.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun UvLevelSlider(value: Float, peakUv: Double, onChange: (Float) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Slider(
+            value = value.coerceIn(0f, MAX_REALISTIC_UV),
+            onValueChange = onChange,
+            valueRange = 0f..MAX_REALISTIC_UV,
+            modifier = Modifier.weight(1f),
+            track = { UvGradientTrack() },
+        )
+        TextButton(onClick = { onChange(peakUv.toFloat()) }) {
+            Text("Peak ${formatNumber(peakUv, 1)}", style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+/**
+ * Full-width gradient bar standing in for the slider track. Stops sit at the WHO/EPA band
+ * boundaries (UV 3 / 6 / 8 / 11) carrying the same palette as [uvBandColor], smoothly
+ * interpolated — so the bar mirrors the colors used everywhere else in the app.
+ */
+@Composable
+private fun UvGradientTrack() {
+    fun frac(uv: Float) = (uv / MAX_REALISTIC_UV).coerceIn(0f, 1f)
+    val stops = arrayOf(
+        0f to UvGreen,
+        frac(3f) to UvYellow,
+        frac(6f) to UvOrange,
+        frac(8f) to UvRed,
+        frac(11f) to UvPurple,
+        1f to UvPurple,
+    )
+    Canvas(Modifier.fillMaxWidth().height(6.dp)) {
+        drawRoundRect(
+            brush = Brush.horizontalGradient(colorStops = stops),
+            cornerRadius = CornerRadius(size.height / 2f),
+        )
+    }
+}
+
+/** Bare / 15 / 30 / 50 selector driving the burn-arc what-if overlay. */
+@Composable
+private fun PreviewSpfChips(selected: Spf, onSelect: (Spf) -> Unit) {
+    val accent = MaterialTheme.colorScheme.onSurface
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("SPF", style = MaterialTheme.typography.labelLarge)
+        listOf(Spf.Off, Spf.Spf15, Spf.Spf30, Spf.Spf50).forEach { spf ->
+            val isSelected = spf == selected
+            FilterChip(
+                selected = isSelected,
+                onClick = { onSelect(spf) },
+                label = { Text(if (spf == Spf.Off) "Bare" else spf.factor.toString()) },
+                border = FilterChipDefaults.filterChipBorder(
+                    enabled = true,
+                    selected = isSelected,
+                    borderColor = Color.Transparent,
+                    selectedBorderColor = accent,
+                    borderWidth = 0.dp,
+                    selectedBorderWidth = 1.5.dp,
+                ),
+            )
         }
     }
 }
@@ -97,15 +210,25 @@ internal fun SkinSummaryChart(summary: SkinSummary, modifier: Modifier = Modifie
 private data class ArcTick(val minutes: Double, val label: String, val showMinutes: Boolean = true)
 
 @Composable
-private fun ConcentricSundial(summary: SkinSummary) {
+private fun ConcentricSundial(summary: SkinSummary, previewSpf: Spf) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     val labelStyle = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, color = onSurface)
+    val shieldLabelStyle = labelStyle.copy(color = ShieldBlue)
     val textMeasurer = rememberTextMeasurer()
 
     val burnStops = burnStops(summary)
     val burnTicks = dedupTicks(burnTicks(summary))
     val vitDStops = vitDStops(summary)
     val vitDTicks = dedupTicks(vitDTicks(summary))
+
+    // SPF what-if overlay: the bare-skin reddening line and the decay-aware protected one. The
+    // shaded arc between them is the extra safe time this SPF buys before first reddening.
+    val bareReddening = summary.minutesToFirstReddening
+    val protReddening = if (previewSpf != Spf.Off) summary.protectedMinutesToBurn(previewSpf, 1.0) else null
+    val protTicks = protReddening
+        ?.takeIf { it < BURN_DIAL_MINUTES }
+        ?.let { listOf(ArcTick(it, "SPF ${previewSpf.factor}")) }
+        .orEmpty()
 
     Box(Modifier.fillMaxWidth().aspectRatio(1.7f)) {
         Canvas(Modifier.fillMaxSize()) {
@@ -126,8 +249,25 @@ private fun ConcentricSundial(summary: SkinSummary) {
             drawGradientArc(center, outerRadius, burnStroke, burnStops)
             drawGradientArc(center, vitDOuter, vitDStroke, vitDStops)
 
+            // Extra-safe band (under the ticks so they stay crisp). When protected reddening runs
+            // off the 6 h dial it's clamped, so the band simply fills to the end.
+            if (bareReddening != null && protReddening != null && protReddening > bareReddening) {
+                drawArcBand(
+                    center = center,
+                    radius = outerRadius,
+                    stroke = burnStroke,
+                    fromMinutes = bareReddening,
+                    toMinutes = protReddening,
+                    axisMax = BURN_DIAL_MINUTES,
+                    color = ShieldBlue.copy(alpha = 0.40f),
+                )
+            }
+
             drawTicks(center, outerRadius, burnStroke, burnTicks, BURN_DIAL_MINUTES, onSurface)
             drawTicks(center, vitDOuter, vitDStroke, vitDTicks, VITD_DIAL_MINUTES, onSurface)
+            if (protTicks.isNotEmpty()) {
+                drawTicks(center, outerRadius, burnStroke, protTicks, BURN_DIAL_MINUTES, ShieldBlue)
+            }
 
             drawLabels(
                 center = center,
@@ -153,8 +293,46 @@ private fun ConcentricSundial(summary: SkinSummary) {
                 canvasWidth = size.width,
                 anchorOutside = false,
             )
+            if (protTicks.isNotEmpty()) {
+                drawLabels(
+                    center = center,
+                    arcRadius = outerRadius,
+                    stroke = burnStroke,
+                    labelGap = labelGap,
+                    ticks = protTicks,
+                    axisMax = BURN_DIAL_MINUTES,
+                    style = shieldLabelStyle,
+                    measurer = textMeasurer,
+                    canvasWidth = size.width,
+                    anchorOutside = true,
+                )
+            }
         }
     }
+}
+
+/** Highlight a sweep of the burn arc between two minute marks (used for the SPF extra-safe band). */
+private fun DrawScope.drawArcBand(
+    center: Offset,
+    radius: Float,
+    stroke: Float,
+    fromMinutes: Double,
+    toMinutes: Double,
+    axisMax: Double,
+    color: Color,
+) {
+    val fromFrac = (fromMinutes / axisMax).coerceIn(0.0, 1.0)
+    val toFrac = (toMinutes / axisMax).coerceIn(0.0, 1.0)
+    if (toFrac <= fromFrac) return
+    drawArc(
+        color = color,
+        startAngle = (180.0 + 180.0 * fromFrac).toFloat(),
+        sweepAngle = (180.0 * (toFrac - fromFrac)).toFloat(),
+        useCenter = false,
+        topLeft = Offset(center.x - radius, center.y - radius),
+        size = Size(radius * 2, radius * 2),
+        style = Stroke(width = stroke, cap = StrokeCap.Butt),
+    )
 }
 
 /** Day-tab burn-bar gradient positioned on the 6 h axis via t_med = minutesToFirstReddening. */
@@ -353,6 +531,31 @@ private fun arcCosSin(minutes: Double, axisMax: Double): Pair<Float, Float> {
     val frac = (minutes / axisMax).coerceIn(0.0, 1.0)
     val theta = (180.0 + 180.0 * frac) * PI / 180.0
     return cos(theta).toFloat() to sin(theta).toFloat()
+}
+
+/**
+ * Caption under the dial. For `Bare` it's the usual safe-sun-window line; for an SPF preview it
+ * spells out the decay-aware burn-time gain and warns the payoff is well under the label number.
+ */
+@Composable
+private fun SpfEffectCaption(summary: SkinSummary, previewSpf: Spf) {
+    if (previewSpf == Spf.Off) {
+        SafeWindowCaption(summary)
+        return
+    }
+    val style = MaterialTheme.typography.bodySmall
+    val bare = summary.minutesToFirstReddening
+    val protected = summary.protectedMinutesToBurn(previewSpf, 1.0)
+    val protectedSunburn = summary.protectedMinutesToBurn(previewSpf, 2.0)
+    val text = if (bare == null || protected == null) {
+        "Burn is never reached at this peak UV — SPF makes no difference here."
+    } else {
+        val sunburnPart = protectedSunburn?.let { ", sunburn at ${formatMinutes(it)}" }.orEmpty()
+        "SPF ${previewSpf.factor}, freshly applied: first reddening ${formatMinutes(bare)} → " +
+            "${formatMinutes(protected)}$sunburnPart. Protection fades as you wear it, so the gain " +
+            "is well under ×${previewSpf.factor} — reapply to keep it up."
+    }
+    Text(text, style = style)
 }
 
 @Composable

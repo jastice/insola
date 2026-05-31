@@ -109,10 +109,6 @@ class DashboardViewModel(
         profileFlow.value = profileFlow.value.copy(acclimatization = a)
     }
 
-    fun setDefaultSpf(spf: Spf) {
-        profileFlow.value = profileFlow.value.copy(defaultSpf = spf)
-    }
-
     /**
      * Drop a fresh attenuation patch onto the timeline at [spf]'s transmittance starting at the
      * current scrubber time. Past patches stay — reapplying composes by `min` per instant so it

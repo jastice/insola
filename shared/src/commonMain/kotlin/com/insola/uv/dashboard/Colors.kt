@@ -14,6 +14,10 @@ internal val UvPurple = Color(0xFF6B49C8)
 internal val OutdoorGreen = Color(0xFF34A853)
 internal val IndoorGray = Color(0xFF9E9E9E)
 
+// Sunscreen "shield" accent — the SPF what-if overlay on the Skin-tab sundial. A cool blue
+// reads as protection and stays distinct from the green→red burn gradient underneath it.
+internal val ShieldBlue = Color(0xFF1E88E5)
+
 // Vitamin-D bucket colors. Trace = neutral gray, Low = amber building, Adequate = healthy green,
 // Sufficient = saturated deep green.
 internal val VitDTrace = Color(0xFFBDBDBD)

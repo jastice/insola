@@ -18,10 +18,9 @@ score — no separate spectral weighting is needed.
 The user-controlled
 [`AttenuationTimeline`](Models.kt) holds a list of
 [`Patch`](Models.kt) records (one per Apply tap). At any instant the
-timeline's transmittance is `min` across all patches; combined with the
-always-on
-[`SkinProfile.defaultSpf`](Models.kt) that becomes
-`min(defaultT, timelineT(t))` — strongest protection wins. This `min`
+timeline's transmittance is `min` across all patches — strongest
+protection wins, with bare skin (`T = 1`) as the floor when no patch
+covers the moment. There is no always-on baseline SPF. This `min`
 composition is what guarantees a re-apply can only *extend* coverage, never
 strip a moment an earlier application already covered.
 
