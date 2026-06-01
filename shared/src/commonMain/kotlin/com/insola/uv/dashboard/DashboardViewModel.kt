@@ -106,8 +106,10 @@ data class DashboardUiState(
     val mode: DayMode,
     /** A forecast load is in flight — show an inline spinner. */
     val refreshing: Boolean,
-    /** Inline error (with retry), or null. Set when the live forecast couldn't be reached. */
+    /** Inline, dismissable error (friendly summary) — null when there's nothing wrong. */
     val error: String?,
+    /** Technical detail (exception type + message) for the error, surfaced for debugging. */
+    val errorDetail: String? = null,
 )
 
 /**
@@ -196,6 +198,7 @@ class DashboardViewModel(
             mode = load.mode,
             refreshing = load.refreshing,
             error = load.error,
+            errorDetail = load.errorDetail,
         )
     }
 
@@ -230,10 +233,14 @@ class DashboardViewModel(
                 val dayStart = clock.todayIn(zone).atStartOfDayIn(zone)
                 val forecast = forecastProvider.fetchForecast(point, dayStart)
                 UvDay.fromForecast(forecast, zone, clock)
-            } catch (_: Throwable) {
+            } catch (e: Throwable) {
+                // Full stack trace to logcat (Android routes println to System.out); a compact
+                // type+message goes to the UI so the cause is visible without a debugger.
+                println("Insola: forecast load failed\n${e.stackTraceToString()}")
                 loadStateFlow.value = loadStateFlow.value.copy(
                     refreshing = false,
                     error = "Couldn't reach the forecast service — showing a clear-sky estimate.",
+                    errorDetail = "${e::class.simpleName}: ${e.message ?: "no message"}",
                 )
                 return@launch
             }
@@ -286,6 +293,12 @@ class DashboardViewModel(
         attenuationFlow.value = AttenuationTimeline.Empty
         loadStateFlow.value = initialEstimate()
         refresh()
+    }
+
+    /** Clear the inline forecast error (the estimate stays on screen). */
+    fun dismissError() {
+        if (loadStateFlow.value.error == null) return
+        loadStateFlow.value = loadStateFlow.value.copy(error = null, errorDetail = null)
     }
 
     fun setPreviewHour(hour: Double) {
@@ -353,6 +366,7 @@ class DashboardViewModel(
         val mode: DayMode,
         val refreshing: Boolean,
         val error: String?,
+        val errorDetail: String? = null,
     )
 
     private data class SkinInputs(

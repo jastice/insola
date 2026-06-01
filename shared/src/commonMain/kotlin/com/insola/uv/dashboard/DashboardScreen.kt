@@ -13,6 +13,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
@@ -56,6 +57,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -166,7 +168,15 @@ private fun DashboardContent(
                         }
                     }
                     if (ui.refreshing || ui.error != null) {
-                        item { InlineLoadStatus(refreshing = ui.refreshing, error = ui.error, onRetry = viewModel::refresh) }
+                        item {
+                            InlineLoadStatus(
+                                refreshing = ui.refreshing,
+                                error = ui.error,
+                                errorDetail = ui.errorDetail,
+                                onRetry = viewModel::refresh,
+                                onDismiss = viewModel::dismissError,
+                            )
+                        }
                     }
                     item {
                         UvTodayCard(
@@ -265,20 +275,58 @@ private fun locationPrecisionLabel(source: LocationSource?): String? = when (sou
     null -> null
 }
 
-/** Inline, non-blocking load status: a small spinner while fetching, or an error + Retry. */
+/**
+ * Inline, non-blocking load status: a small spinner while fetching, or a dismissable error card
+ * that surfaces the technical detail (selectable, so it can be copied) plus Retry / Dismiss.
+ */
 @Composable
-private fun InlineLoadStatus(refreshing: Boolean, error: String?, onRetry: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
+private fun InlineLoadStatus(
+    refreshing: Boolean,
+    error: String?,
+    errorDetail: String?,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    if (error == null) {
         if (refreshing) {
-            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-            Text("Updating forecast…", style = MaterialTheme.typography.bodySmall)
-        } else if (error != null) {
-            Text(error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-            TextButton(onClick = onRetry) { Text("Retry") }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text("Updating forecast…", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        return
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        ),
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text(error, style = MaterialTheme.typography.bodySmall)
+            if (!errorDetail.isNullOrBlank()) {
+                Spacer(Modifier.height(4.dp))
+                // Selectable so the exact exception can be copied out for debugging.
+                SelectionContainer {
+                    Text(
+                        errorDetail,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = onRetry) { Text("Retry") }
+                TextButton(onClick = onDismiss) { Text("Dismiss") }
+            }
         }
     }
 }
