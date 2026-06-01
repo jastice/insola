@@ -19,6 +19,8 @@ import com.insola.uv.location.IpLocationProvider
 import com.insola.uv.location.TimezoneLocationProvider
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpRequestRetry
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
@@ -29,6 +31,17 @@ class MainActivity : ComponentActivity() {
         HttpClient(OkHttp) {
             install(ContentNegotiation) {
                 json(Json { ignoreUnknownKeys = true })
+            }
+            // Bound every request so a dead network fails fast instead of hanging the load.
+            install(HttpTimeout) {
+                connectTimeoutMillis = 10_000
+                requestTimeoutMillis = 15_000
+                socketTimeoutMillis = 15_000
+            }
+            // Ride out transient DNS/network blips transparently (benefits the IP-geo call too).
+            install(HttpRequestRetry) {
+                retryOnExceptionOrServerErrors(maxRetries = 3)
+                exponentialDelay()
             }
         }
     }

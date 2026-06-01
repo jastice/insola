@@ -36,6 +36,29 @@ import kotlinx.datetime.toLocalDateTime
 import kotlinx.datetime.todayIn
 import kotlin.time.Duration
 
+/**
+ * Connectivity-failure exception class names. Matched by simple name so this stays in commonMain —
+ * `java.net.*` isn't referenceable here. Covers the common offline / timeout cases (Ktor's
+ * `ConnectTimeoutException`/`HttpRequestTimeoutException` plus the JVM `java.net` ones).
+ */
+private val CONNECTIVITY_EXCEPTIONS = setOf(
+    "UnknownHostException",
+    "ConnectException",
+    "SocketTimeoutException",
+    "ConnectTimeoutException",
+    "HttpRequestTimeoutException",
+)
+
+/**
+ * Friendly forecast-failure summary for the inline error row. Distinguishes a likely-offline device
+ * from a reachable-but-failing service; the true exception type always rides along in `errorDetail`.
+ */
+internal fun forecastErrorMessage(e: Throwable): String =
+    if (e::class.simpleName in CONNECTIVITY_EXCEPTIONS)
+        "You appear to be offline — showing a clear-sky estimate."
+    else
+        "Couldn't reach the forecast service — showing a clear-sky estimate."
+
 data class DashboardState(
     /** The day-model driving every readout — a fixture's day in dev mode, the live forecast otherwise. */
     val day: UvDay,
@@ -239,7 +262,7 @@ class DashboardViewModel(
                 println("Insola: forecast load failed\n${e.stackTraceToString()}")
                 loadStateFlow.value = loadStateFlow.value.copy(
                     refreshing = false,
-                    error = "Couldn't reach the forecast service — showing a clear-sky estimate.",
+                    error = forecastErrorMessage(e),
                     errorDetail = "${e::class.simpleName}: ${e.message ?: "no message"}",
                 )
                 return@launch
