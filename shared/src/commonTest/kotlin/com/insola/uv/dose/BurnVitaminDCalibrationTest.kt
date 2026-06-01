@@ -1,8 +1,8 @@
 package com.insola.uv.dose
 
 import com.insola.uv.dev.Fixtures
-import com.insola.uv.dev.Scenario
 import com.insola.uv.domain.SkinProfile
+import com.insola.uv.domain.UvDay
 import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.solar.SolarGeometry
 import kotlinx.datetime.Instant
@@ -31,18 +31,18 @@ class BurnVitaminDCalibrationTest {
     fun vitaminDReachesAdequateByTheTimeBurnReachesOneMED() {
         val profile = SkinProfile(SkinSensitivity.III)
         listOf("equator", "berlin", "cloudy").forEach { id ->
-            val scenario = Fixtures.byId(id)
-            val noon = solarNoonInstant(scenario)
+            val day = Fixtures.byId(id).day
+            val noon = solarNoonInstant(day)
             val ttb = BurnModel.timeToThreshold(
                 now = noon,
-                forecast = scenario.forecast,
+                forecast = day.forecast,
                 profile = profile,
                 assumedFactor = 1.0,
             )
             assertNotNull(ttb, "$id: should reach 1 MED with continuous exposure from solar noon")
 
             val score = VitaminDModel.accumulate(
-                forecast = scenario.forecast,
+                forecast = day.forecast,
                 from = noon,
                 to = noon + ttb,
                 skinExposedFraction = 0.25,
@@ -56,10 +56,10 @@ class BurnVitaminDCalibrationTest {
         }
     }
 
-    private fun solarNoonInstant(scenario: Scenario): Instant {
+    private fun solarNoonInstant(day: UvDay): Instant {
         val noonMinute = (0..1440).maxByOrNull { mins ->
-            SolarGeometry.solarElevationDegrees(scenario.location, scenario.dayStart + mins.minutes)
+            SolarGeometry.solarElevationDegrees(day.location, day.dayStart + mins.minutes)
         }!!
-        return scenario.dayStart + noonMinute.minutes
+        return day.dayStart + noonMinute.minutes
     }
 }

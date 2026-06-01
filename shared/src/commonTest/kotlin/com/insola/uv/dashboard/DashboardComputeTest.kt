@@ -24,7 +24,7 @@ import kotlin.time.Duration.Companion.minutes
 class DashboardComputeTest {
 
     private fun fullDaySession(scenario: Scenario): OutdoorSession =
-        OutdoorSession(start = scenario.dayStart, end = scenario.dayStart + 24.hours)
+        OutdoorSession(start = scenario.day.dayStart, end = scenario.day.dayStart + 24.hours)
 
     private fun stateAt(
         scenarioId: String,
@@ -36,7 +36,7 @@ class DashboardComputeTest {
     ): DashboardState {
         val scenario = Fixtures.byId(scenarioId)
         return DashboardCompute.compute(
-            scenario = scenario,
+            day = scenario.day,
             hourOfDay = hour,
             profile = SkinProfile(skin, acclimatization),
             sessions = sessions ?: listOf(fullDaySession(scenario)),
@@ -76,7 +76,7 @@ class DashboardComputeTest {
         val session = fullDaySession(scenario)
         val doses = (0..24).map { hour ->
             DashboardCompute.compute(
-                scenario = scenario,
+                day = scenario.day,
                 hourOfDay = hour.toDouble(),
                 profile = SkinProfile(SkinSensitivity.III),
                 sessions = listOf(session),
@@ -164,9 +164,9 @@ class DashboardComputeTest {
     fun openSession_accruesDoseUntilNow() {
         val scenario = Fixtures.byId("equator")
         // Session opened at hour 10, never closed. At hour 12, dose should reflect 10..12 only.
-        val openAt10 = OutdoorSession(start = scenario.dayStart + 10.hours, end = null)
+        val openAt10 = OutdoorSession(start = scenario.day.dayStart + 10.hours, end = null)
         val s = DashboardCompute.compute(
-            scenario = scenario,
+            day = scenario.day,
             hourOfDay = 12.0,
             profile = SkinProfile(SkinSensitivity.III),
             sessions = listOf(openAt10),
@@ -175,9 +175,9 @@ class DashboardComputeTest {
         assertTrue(s.accumulatedDose > 0.0, "open session should contribute dose")
 
         // Same scenario, same hour, but closed session over the same window.
-        val closed = openAt10.copy(end = scenario.dayStart + 12.hours)
+        val closed = openAt10.copy(end = scenario.day.dayStart + 12.hours)
         val sClosed = DashboardCompute.compute(
-            scenario = scenario,
+            day = scenario.day,
             hourOfDay = 12.0,
             profile = SkinProfile(SkinSensitivity.III),
             sessions = listOf(closed),
@@ -193,15 +193,15 @@ class DashboardComputeTest {
     fun shorterSession_yieldsLessDose() {
         val scenario = Fixtures.byId("equator")
         val short = OutdoorSession(
-            start = scenario.dayStart + 11.hours,
-            end = scenario.dayStart + 12.hours,
+            start = scenario.day.dayStart + 11.hours,
+            end = scenario.day.dayStart + 12.hours,
         )
         val long = OutdoorSession(
-            start = scenario.dayStart + 9.hours,
-            end = scenario.dayStart + 13.hours,
+            start = scenario.day.dayStart + 9.hours,
+            end = scenario.day.dayStart + 13.hours,
         )
-        val shortState = DashboardCompute.compute(scenario, 23.0, SkinProfile(SkinSensitivity.III), listOf(short))
-        val longState = DashboardCompute.compute(scenario, 23.0, SkinProfile(SkinSensitivity.III), listOf(long))
+        val shortState = DashboardCompute.compute(scenario.day,23.0, SkinProfile(SkinSensitivity.III), listOf(short))
+        val longState = DashboardCompute.compute(scenario.day,23.0, SkinProfile(SkinSensitivity.III), listOf(long))
         assertTrue(
             longState.accumulatedDose > shortState.accumulatedDose,
             "4h session should accumulate more than 1h session " +
@@ -218,13 +218,13 @@ class DashboardComputeTest {
         // thickness derate (covered separately).
         val scenario = Fixtures.byId("berlin")
         val session = OutdoorSession(
-            start = scenario.dayStart + 10.hours,
-            end = scenario.dayStart + 10.hours + 15.minutes,
+            start = scenario.day.dayStart + 10.hours,
+            end = scenario.day.dayStart + 10.hours + 15.minutes,
         )
-        val now = scenario.hourToInstant(11.0)
-        val bare = DashboardCompute.compute(scenario, 11.0, SkinProfile(SkinSensitivity.III), listOf(session))
+        val now = scenario.day.hourToInstant(11.0)
+        val bare = DashboardCompute.compute(scenario.day,11.0, SkinProfile(SkinSensitivity.III), listOf(session))
         val boosted = DashboardCompute.compute(
-            scenario, 11.0, SkinProfile(SkinSensitivity.III), listOf(session),
+            scenario.day, 11.0, SkinProfile(SkinSensitivity.III), listOf(session),
             attenuation = AttenuationTimeline(listOf(
                 AttenuationTimeline.Patch(now, Spf.Spf50.transmittance, applicationThickness = 1.0),
             )),
@@ -254,20 +254,20 @@ class DashboardComputeTest {
         // below are tight; realistic thickness derates are covered in a dedicated test.
         val scenario = Fixtures.byId("berlin")
         val session = OutdoorSession(
-            start = scenario.dayStart + 10.hours,
-            end = scenario.dayStart + 12.hours,
+            start = scenario.day.dayStart + 10.hours,
+            end = scenario.day.dayStart + 12.hours,
         )
         val appliedHalfway = AttenuationTimeline.Patch(
-            appliedAt = scenario.dayStart + 11.hours,
+            appliedAt = scenario.day.dayStart + 11.hours,
             labelTransmittance = Spf.Spf50.transmittance,
             applicationThickness = 1.0,
         )
 
         val bare = DashboardCompute.compute(
-            scenario, 12.0, SkinProfile(SkinSensitivity.III), listOf(session),
+            scenario.day, 12.0, SkinProfile(SkinSensitivity.III), listOf(session),
         )
         val boosted = DashboardCompute.compute(
-            scenario, 12.0, SkinProfile(SkinSensitivity.III), listOf(session),
+            scenario.day, 12.0, SkinProfile(SkinSensitivity.III), listOf(session),
             attenuation = AttenuationTimeline(listOf(appliedHalfway)),
         )
         // First hour was unprotected in both runs → boosted dose can't drop below ~½ bare.
@@ -300,24 +300,24 @@ class DashboardComputeTest {
         // integrate identically over the session window (reApply contributes nothing inside).
         val scenario = Fixtures.byId("berlin")
         val session = OutdoorSession(
-            start = scenario.dayStart + 14.hours,
-            end = scenario.dayStart + 15.hours + 30.minutes,
+            start = scenario.day.dayStart + 14.hours,
+            end = scenario.day.dayStart + 15.hours + 30.minutes,
         )
         val firstApply = AttenuationTimeline.Patch(
-            appliedAt = scenario.dayStart + 14.hours,
+            appliedAt = scenario.day.dayStart + 14.hours,
             labelTransmittance = Spf.Spf50.transmittance,
         )
         val reApply = AttenuationTimeline.Patch(
-            appliedAt = scenario.dayStart + 15.hours + 30.minutes,
+            appliedAt = scenario.day.dayStart + 15.hours + 30.minutes,
             labelTransmittance = Spf.Spf50.transmittance,
         )
 
         val onlyFirst = DashboardCompute.compute(
-            scenario, 15.5, SkinProfile(SkinSensitivity.III), listOf(session),
+            scenario.day, 15.5, SkinProfile(SkinSensitivity.III), listOf(session),
             attenuation = AttenuationTimeline(listOf(firstApply)),
         )
         val afterReapply = DashboardCompute.compute(
-            scenario, 15.5, SkinProfile(SkinSensitivity.III), listOf(session),
+            scenario.day, 15.5, SkinProfile(SkinSensitivity.III), listOf(session),
             attenuation = AttenuationTimeline(listOf(firstApply, reApply)),
         )
         assertEquals(onlyFirst.accumulatedDose, afterReapply.accumulatedDose, 1e-9)
@@ -331,10 +331,10 @@ class DashboardComputeTest {
         // transmittance is purely the (decayed) patch value — weaker than fresh, but still some
         // residual protection short of bare skin.
         val scenario = Fixtures.byId("equator")
-        val now = scenario.hourToInstant(13.0)
+        val now = scenario.day.hourToInstant(13.0)
         val patch = AttenuationTimeline.Patch(now - 3.hours, Spf.Spf50.transmittance)
         val s = DashboardCompute.compute(
-            scenario, 13.0,
+            scenario.day, 13.0,
             SkinProfile(SkinSensitivity.III),
             sessions = emptyList(),
             attenuation = AttenuationTimeline(listOf(patch)),
@@ -354,9 +354,9 @@ class DashboardComputeTest {
         // deliver effective SPF 25.5 at the moment of application, *not* the labeled 1/50
         // transmittance the bottle promises.
         val scenario = Fixtures.byId("equator")
-        val now = scenario.hourToInstant(13.0)
+        val now = scenario.day.hourToInstant(13.0)
         val s = DashboardCompute.compute(
-            scenario, 13.0,
+            scenario.day, 13.0,
             SkinProfile(SkinSensitivity.III),
             sessions = emptyList(),
             attenuation = AttenuationTimeline(listOf(
@@ -373,7 +373,7 @@ class DashboardComputeTest {
         // gradually fades rather than cliffing off at 2 h. Sampled across the modelling
         // horizon, transmittance must be strictly increasing (toward 1.0 = bare).
         val scenario = Fixtures.byId("equator")
-        val applied = scenario.hourToInstant(10.0)
+        val applied = scenario.day.hourToInstant(10.0)
         val patch = AttenuationTimeline.Patch(applied, Spf.Spf50.transmittance, applicationThickness = 1.0)
         val samples = listOf(0.0, 0.5, 1.0, 2.0, 4.0, 8.0).map { dt ->
             patch.transmittanceAt(applied + dt.hours)
@@ -393,7 +393,7 @@ class DashboardComputeTest {
         // Water immersion / heavy sweat roughly halves the half-life (Stokes & Diffey 1999).
         // At equal elapsed time, the wet patch must transmit more UV than the dry one.
         val scenario = Fixtures.byId("equator")
-        val applied = scenario.hourToInstant(10.0)
+        val applied = scenario.day.hourToInstant(10.0)
         val dry = AttenuationTimeline.Patch(
             applied, Spf.Spf50.transmittance, applicationThickness = 1.0, wearMultiplier = 1.0,
         )
@@ -412,11 +412,37 @@ class DashboardComputeTest {
         val scenario = Fixtures.byId("equator")
         // Session starts at hour 14 but now is hour 10.
         val future = OutdoorSession(
-            start = scenario.dayStart + 14.hours,
-            end = scenario.dayStart + 16.hours,
+            start = scenario.day.dayStart + 14.hours,
+            end = scenario.day.dayStart + 16.hours,
         )
-        val s = DashboardCompute.compute(scenario, 10.0, SkinProfile(SkinSensitivity.III), listOf(future))
+        val s = DashboardCompute.compute(scenario.day,10.0, SkinProfile(SkinSensitivity.III), listOf(future))
         assertEquals(0.0, s.accumulatedDose, 1e-9, "a session in the future should not have contributed yet")
         assertTrue(!s.isCurrentlyOutside)
+    }
+
+    @Test
+    fun previewHour_isDecoupledFromNow_readoutsTrackNowOnly() {
+        // The live-mode invariant: every readout/integral is anchored to the real-time `now`, and
+        // the scrubber's preview hour is a chart-only marker. Hold `now` fixed at hour 12 while the
+        // preview points at hour 6 — current UV, elevation, dose, time-to-burn and the now-marker
+        // must all match a run where preview == now, and must NOT shift toward the preview hour.
+        val day = Fixtures.byId("equator").day
+        val now = day.hourToInstant(12.0)
+        val session = OutdoorSession(start = day.dayStart + 10.hours, end = null)
+        val profile = SkinProfile(SkinSensitivity.III)
+
+        val previewElsewhere = DashboardCompute.compute(day, now, previewHour = 6.0, profile, listOf(session))
+        val previewAtNow = DashboardCompute.compute(day, now, previewHour = 12.0, profile, listOf(session))
+
+        // Preview marker follows the scrubber…
+        assertEquals(6.0, previewElsewhere.previewHour, 1e-12)
+        // …but every readout is invariant to it — identical to preview-at-now.
+        assertEquals(previewAtNow.currentUv, previewElsewhere.currentUv, 1e-12)
+        assertEquals(previewAtNow.solarElevationDeg, previewElsewhere.solarElevationDeg, 1e-12)
+        assertEquals(previewAtNow.accumulatedDose, previewElsewhere.accumulatedDose, 1e-12)
+        assertEquals(previewAtNow.budgetPercent, previewElsewhere.budgetPercent, 1e-12)
+        assertEquals(previewAtNow.timeToFirstReddening, previewElsewhere.timeToFirstReddening)
+        // The solid now-marker sits at the real hour, not the preview hour.
+        assertEquals(12.0, previewElsewhere.nowHour, 1e-9)
     }
 }

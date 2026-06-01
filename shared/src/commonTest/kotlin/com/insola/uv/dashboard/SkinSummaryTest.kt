@@ -21,7 +21,7 @@ class SkinSummaryTest {
     fun equatorialPeak_firstReddeningBeforeSunburn_andAdequateBeforeFirst() {
         // Singapore peak UV ≈ 12 with overhead sun: vit-D should saturate well before any burn
         // boundary, matching the BurnVitaminDCalibrationTest invariant projected onto SkinSummary.
-        val summary = SkinSummary.compute(Fixtures.byId("equator"), SkinProfile(SkinSensitivity.III))
+        val summary = SkinSummary.compute(Fixtures.byId("equator").day, SkinProfile(SkinSensitivity.III))
         assertTrue(summary.peakUv > 8.0)
         val tFirst = summary.minutesToFirstReddening
         val tSunburn = summary.minutesToSunburn
@@ -38,7 +38,7 @@ class SkinSummaryTest {
     fun arcticWinter_hasHugeMinutesToBoundaries_clampedByAxis() {
         // Sun barely clears the horizon — peak elevation ≈ 2.4°. Rates are tiny but non-zero,
         // so the projection still produces huge minutes-to-X values; the chart axis must clamp.
-        val summary = SkinSummary.compute(Fixtures.byId("reykjavik"), SkinProfile(SkinSensitivity.II))
+        val summary = SkinSummary.compute(Fixtures.byId("reykjavik").day, SkinProfile(SkinSensitivity.II))
         assertTrue(summary.peakUv < 1.5)
         // Times-to-threshold are finite but very large (hours).
         val tAdequate = summary.minutesToAdequateVitD
@@ -55,10 +55,10 @@ class SkinSummaryTest {
         // The two effects compose symmetrically — tan extends burn budget AND extends time to
         // Adequate D, scaled by the same effectiveAcclimatizationFactor.
         val baseline = SkinSummary.compute(
-            Fixtures.byId("berlin"), SkinProfile(SkinSensitivity.III, Acclimatization.None),
+            Fixtures.byId("berlin").day, SkinProfile(SkinSensitivity.III, Acclimatization.None),
         )
         val tanned = SkinSummary.compute(
-            Fixtures.byId("berlin"), SkinProfile(SkinSensitivity.III, Acclimatization.Moderate),
+            Fixtures.byId("berlin").day, SkinProfile(SkinSensitivity.III, Acclimatization.Moderate),
         )
         val factor = 2.2 // Acclimatization.Moderate, below the III cap of 2.5
 
@@ -77,10 +77,10 @@ class SkinSummaryTest {
     fun phototypeCap_clipsExtremeAcclimatization() {
         // Type I cap is ×1.4. Deep tan (×3.0) must clip to 1.4× on both rows.
         val baseline = SkinSummary.compute(
-            Fixtures.byId("berlin"), SkinProfile(SkinSensitivity.I, Acclimatization.None),
+            Fixtures.byId("berlin").day, SkinProfile(SkinSensitivity.I, Acclimatization.None),
         )
         val capped = SkinSummary.compute(
-            Fixtures.byId("berlin"), SkinProfile(SkinSensitivity.I, Acclimatization.Deep),
+            Fixtures.byId("berlin").day, SkinProfile(SkinSensitivity.I, Acclimatization.Deep),
         )
         val baseFirst = baseline.minutesToFirstReddening
         val capFirst = capped.minutesToFirstReddening
@@ -92,7 +92,7 @@ class SkinSummaryTest {
     fun maxRelevantMinutes_isCapped() {
         // Reykjavík forces extreme burn times (low UV → huge minutes). Axis must clamp so the
         // chart's X axis stays usable.
-        val summary = SkinSummary.compute(Fixtures.byId("reykjavik"), SkinProfile(SkinSensitivity.III))
+        val summary = SkinSummary.compute(Fixtures.byId("reykjavik").day, SkinProfile(SkinSensitivity.III))
         assertTrue(summary.maxRelevantMinutes <= SkinSummary.MAX_AXIS_MINUTES + 1e-9)
     }
 
@@ -101,7 +101,7 @@ class SkinSummaryTest {
         // The SPF what-if integrates a single *decaying* patch against constant peak UV, so a
         // chosen SPF must delay reddening — monotonically by strength — yet buy far less than a
         // flat ×SPF would, because protection fades back toward bare skin as you wear it.
-        val summary = SkinSummary.compute(Fixtures.byId("equator"), SkinProfile(SkinSensitivity.III))
+        val summary = SkinSummary.compute(Fixtures.byId("equator").day, SkinProfile(SkinSensitivity.III))
         val bare = summary.minutesToFirstReddening
         assertNotNull(bare)
 
@@ -131,7 +131,7 @@ class SkinSummaryTest {
     fun atUvLevel_rescalesBoundariesInverselyWithUv_andMatchesComputeAtThatUv() {
         // The slider recomputes the card at an arbitrary UV, holding the day's sun angle fixed.
         // Bare times scale inversely with UV, and the result equals computing fresh at that UV.
-        val summary = SkinSummary.compute(Fixtures.byId("equator"), SkinProfile(SkinSensitivity.III))
+        val summary = SkinSummary.compute(Fixtures.byId("equator").day, SkinProfile(SkinSensitivity.III))
         val peak = summary.peakUv
         assertTrue(peak > 8.0)
 
@@ -157,7 +157,7 @@ class SkinSummaryTest {
 
     @Test
     fun tickOrdering_burnBeforeSunburn_quarterBeforeHalfBeforeFull() {
-        val summary = SkinSummary.compute(Fixtures.byId("equator"), SkinProfile(SkinSensitivity.III))
+        val summary = SkinSummary.compute(Fixtures.byId("equator").day, SkinProfile(SkinSensitivity.III))
         val tFirst = summary.minutesToFirstReddening!!
         val tSunburn = summary.minutesToSunburn!!
         val tQ = summary.minutesToTraceVitD!!

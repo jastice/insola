@@ -17,6 +17,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     buildTypes {
@@ -35,4 +36,11 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.compose.runtime)
     implementation(libs.compose.ui)
+    // MainActivity builds the live forecast/location stack (manual DI), so it references the Ktor
+    // client + JSON types directly — :shared exposes them only as `implementation`.
+    implementation(libs.ktor.client.core)
+    implementation(libs.ktor.client.okhttp)
+    implementation(libs.ktor.client.content.negotiation)
+    implementation(libs.ktor.serialization.kotlinx.json)
+    implementation(libs.kotlinx.serialization.json)
 }

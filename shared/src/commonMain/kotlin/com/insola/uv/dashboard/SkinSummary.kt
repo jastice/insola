@@ -1,8 +1,8 @@
 package com.insola.uv.dashboard
 
-import com.insola.uv.dev.Scenario
 import com.insola.uv.domain.AttenuationTimeline
 import com.insola.uv.domain.SkinProfile
+import com.insola.uv.domain.UvDay
 import com.insola.uv.domain.Spf
 import com.insola.uv.dose.VitaminDModel
 import com.insola.uv.solar.SolarGeometry
@@ -127,13 +127,13 @@ data class SkinSummary(
         private const val DECAY_PROJECTION_CAP_MINUTES: Double = 24.0 * 60.0
 
         fun compute(
-            scenario: Scenario,
+            day: UvDay,
             profile: SkinProfile,
         ): SkinSummary {
-            val peakSample = scenario.forecast.samples.maxByOrNull { it.uvIndex }
+            val peakSample = day.forecast.samples.maxByOrNull { it.uvIndex }
             val peakUv = peakSample?.uvIndex ?: 0.0
             val peakElevation = peakSample
-                ?.let { SolarGeometry.solarElevationDegrees(scenario.location, it.time) }
+                ?.let { SolarGeometry.solarElevationDegrees(day.location, it.time) }
                 ?: 0.0
 
             return build(

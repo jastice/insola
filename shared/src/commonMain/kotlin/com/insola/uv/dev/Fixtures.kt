@@ -1,58 +1,27 @@
 package com.insola.uv.dev
 
 import com.insola.uv.domain.GeoPoint
-import com.insola.uv.domain.UvForecast
-import com.insola.uv.domain.UvSample
+import com.insola.uv.domain.UvDay
 import com.insola.uv.solar.SolarGeometry
 import kotlinx.datetime.Instant
 import kotlin.math.PI
 import kotlin.math.sin
 import kotlin.time.Duration.Companion.hours
-import kotlin.time.Duration.Companion.milliseconds
 
 /**
- * A synthetic dev scenario: a location, a calendar day (expressed as the [Instant] of midnight
- * **local** at that location), and 25 hourly UV-index samples covering 00:00..24:00 local.
+ * A synthetic dev scenario: dev metadata (id/name/description) wrapped around a neutral [UvDay].
  *
- * Because [dayStart] is local midnight expressed in UTC, the per-sample Instants line up with the
- * actual solar geometry for the location — so [com.insola.uv.solar.SolarGeometry] gives realistic
- * elevations at "local hour H = dayStart + H.hours".
+ * The day-model (location, local-midnight [UvDay.dayStart], 25 hourly samples, and the
+ * hour↔instant helpers) lives in [UvDay] so both fixtures and the live forecast provider feed the
+ * same [com.insola.uv.dashboard.DashboardCompute] pipeline. A `Scenario` just adds the dev-only
+ * labels the hidden scenario picker shows.
  */
 data class Scenario(
     val id: String,
     val name: String,
     val description: String,
-    val location: GeoPoint,
-    val dayStart: Instant,
-    val hourlyUv: List<Double>,
-) {
-    init {
-        require(hourlyUv.size == 25) { "scenario $id: expected 25 hourly samples, got ${hourlyUv.size}" }
-    }
-
-    val forecast: UvForecast by lazy {
-        UvForecast(
-            location = location,
-            samples = hourlyUv.mapIndexed { hour, uv -> UvSample(dayStart + hour.hours, uv) },
-        )
-    }
-
-    val dayEnd: Instant get() = dayStart + 24.hours
-
-    /** Convert an hour-of-day (0..24) to the corresponding [Instant] within this scenario's day. */
-    fun hourToInstant(hour: Double): Instant =
-        dayStart + (hour * 3_600_000.0).toLong().milliseconds
-
-    /**
-     * Inverse of [hourToInstant]: how many hours past [dayStart] is [instant]? Returns null if the
-     * instant falls before the scenario's day begins.
-     */
-    fun instantToHour(instant: Instant): Double? {
-        val ms = (instant - dayStart).inWholeMilliseconds
-        if (ms < 0) return null
-        return ms / 3_600_000.0
-    }
-}
+    val day: UvDay,
+)
 
 object Fixtures {
 
@@ -96,9 +65,11 @@ object Fixtures {
         id = id,
         name = name,
         description = description,
-        location = location,
-        dayStart = dayStart,
-        hourlyUv = clearSkyUv(location, dayStart, peakUvIndex).mapIndexed { h, uv -> uv * cloudFactor(h) },
+        day = UvDay(
+            location = location,
+            dayStart = dayStart,
+            hourlyUv = clearSkyUv(location, dayStart, peakUvIndex).mapIndexed { h, uv -> uv * cloudFactor(h) },
+        ),
     )
 
     val equatorialNoon: Scenario = clearSkyScenario(
@@ -163,18 +134,22 @@ object Fixtures {
         id = "rising",
         name = "Mirrored — rising",
         description = "Late-afternoon peak. Same total area as 'falling'.",
-        location = GeoPoint(52.52, 13.40),
-        dayStart = Instant.parse("2026-06-20T22:00:00Z"),
-        hourlyUv = mirrorCurve,
+        day = UvDay(
+            location = GeoPoint(52.52, 13.40),
+            dayStart = Instant.parse("2026-06-20T22:00:00Z"),
+            hourlyUv = mirrorCurve,
+        ),
     )
 
     val mirrorFalling = Scenario(
         id = "falling",
         name = "Mirrored — falling",
         description = "Late-morning peak. Same total area as 'rising'.",
-        location = GeoPoint(52.52, 13.40),
-        dayStart = Instant.parse("2026-06-20T22:00:00Z"),
-        hourlyUv = mirrorCurve.reversed(),
+        day = UvDay(
+            location = GeoPoint(52.52, 13.40),
+            dayStart = Instant.parse("2026-06-20T22:00:00Z"),
+            hourlyUv = mirrorCurve.reversed(),
+        ),
     )
 
     val all: List<Scenario> = listOf(

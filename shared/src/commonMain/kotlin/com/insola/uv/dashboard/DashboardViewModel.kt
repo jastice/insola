@@ -2,6 +2,7 @@ package com.insola.uv.dashboard
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.insola.uv.data.UvForecastProvider
 import com.insola.uv.dev.Fixtures
 import com.insola.uv.dev.Scenario
 import com.insola.uv.domain.Acclimatization
@@ -10,22 +11,38 @@ import com.insola.uv.domain.OutdoorSession
 import com.insola.uv.domain.SkinProfile
 import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.domain.Spf
+import com.insola.uv.domain.UvDay
 import com.insola.uv.dose.BurnTier
 import com.insola.uv.dose.VitaminDModel
+import com.insola.uv.location.LocationProvider
+import com.insola.uv.location.LocationSource
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.toLocalDateTime
+import kotlinx.datetime.todayIn
 import kotlin.time.Duration
 
 data class DashboardState(
-    val scenario: Scenario,
-    val hourOfDay: Double,
+    /** The day-model driving every readout — a fixture's day in dev mode, the live forecast otherwise. */
+    val day: UvDay,
+    /** Draggable, preview-only scrubber marker (dashed). Decoupled from real time. */
+    val previewHour: Double,
+    /** Real wall-clock hour mapped into [day] — the solid "now" marker. Tracks the clock in live mode. */
+    val nowHour: Double,
+    /** Real time everything integrates/projects against. */
     val now: Instant,
     val profile: SkinProfile,
     val skinSummary: SkinSummary,
@@ -61,44 +78,154 @@ data class DashboardState(
     val reapplyAdvisor: ReapplyAdvisor,
 )
 
+/**
+ * Top-level screen state. The day-model is loaded asynchronously in live mode (location → forecast),
+ * so the dashboard is only [Ready] once a [UvDay] exists; until then the UI shows [Loading] or
+ * [Error] (with a working retry).
+ */
+sealed interface DashboardUiState {
+    data object Loading : DashboardUiState
+    data class Error(val message: String) : DashboardUiState
+    data class Ready(
+        val dashboard: DashboardState,
+        /** Where the live location came from (for the precision hint); null in dev/fixture mode. */
+        val locationSource: LocationSource?,
+        /** Human place name (city / metro) for the header, when one could be resolved. */
+        val place: String?,
+        /** True when driven by the live forecast; false when a dev fixture is selected. */
+        val isLive: Boolean,
+    ) : DashboardUiState
+}
+
+/**
+ * Drives the dashboard from either the live forecast (default) or a hidden dev fixture.
+ *
+ * Live mode resolves the device location, fetches today's UV curve, and anchors "now" to the real
+ * clock (advancing ~1/min). Dev mode replays a synthetic [Scenario] with scrubber-as-now. The
+ * scrubber's [setPreviewHour] only ever moves the preview marker — never "now".
+ */
 class DashboardViewModel(
-    initialScenarioId: String = Fixtures.all.first().id,
+    private val forecastProvider: UvForecastProvider,
+    private val locationProvider: LocationProvider,
+    @Suppress("unused") private val devMode: Boolean = false,
+    private val clock: Clock = Clock.System,
+    private val zone: TimeZone = TimeZone.currentSystemDefault(),
 ) : ViewModel() {
 
-    private val scenarioIdFlow = MutableStateFlow(initialScenarioId)
-    private val hourFlow = MutableStateFlow(wallClockHourOfDay())
+    private val previewHourFlow = MutableStateFlow(wallClockHourOfDay(clock, zone))
     private val profileFlow = MutableStateFlow(SkinProfile.Default)
     private val sessionsFlow = MutableStateFlow<List<OutdoorSession>>(emptyList())
     private val attenuationFlow = MutableStateFlow(AttenuationTimeline.Empty)
 
+    /** The loaded day (live or fixture), or its loading/error state. */
+    private val dayResultFlow = MutableStateFlow<DayResult>(DayResult.Loading)
+
+    /** Selected fixture id, or null while in live mode. Drives the dev picker highlight + "Live" chip. */
+    private val selectedScenarioIdFlow = MutableStateFlow<String?>(null)
+    val selectedScenarioId: StateFlow<String?> = selectedScenarioIdFlow.asStateFlow()
+
+    private var loadJob: Job? = null
+
+    /**
+     * Real-clock tick, re-emitting roughly once a minute so the live "now" marker advances on its
+     * own. Dev/fixture mode ignores the value (scrubber-as-now), but keeping it in the combine is
+     * harmless — recomputing the same fixture state once a minute costs nothing.
+     */
+    private val nowTickFlow: StateFlow<Instant> = flow {
+        while (true) {
+            emit(clock.now())
+            delay(NOW_TICK_MILLIS)
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, clock.now())
+
+    /** Bundle the three skin/exposure inputs so the top-level [combine] stays within its 5-arg limit. */
+    private val skinInputsFlow: Flow<SkinInputs> =
+        combine(profileFlow, sessionsFlow, attenuationFlow) { profile, sessions, attenuation ->
+            SkinInputs(profile, sessions, attenuation)
+        }
+
     val scenarios: List<Scenario> = Fixtures.all
 
-    val state: StateFlow<DashboardState> =
-        combine(scenarioIdFlow, hourFlow, profileFlow, sessionsFlow, attenuationFlow) {
-            id, hour, profile, sessions, attenuation ->
-            DashboardCompute.compute(Fixtures.byId(id), hour, profile, sessions, attenuation)
+    val uiState: StateFlow<DashboardUiState> =
+        combine(dayResultFlow, previewHourFlow, nowTickFlow, skinInputsFlow) { result, previewHour, tick, skin ->
+            toUiState(result, previewHour, tick, skin)
         }.stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
-            initialValue = DashboardCompute.compute(
-                Fixtures.byId(initialScenarioId),
-                hourFlow.value,
-                profileFlow.value,
-                sessionsFlow.value,
-                attenuationFlow.value,
-            ),
+            initialValue = DashboardUiState.Loading,
         )
 
-    fun selectScenario(id: String) {
-        if (scenarioIdFlow.value == id) return
-        scenarioIdFlow.value = id
-        // Sessions are anchored to the previous scenario's day — clear them so a fresh scenario
-        // starts with a clean log.
-        sessionsFlow.value = emptyList()
+    init {
+        // Live data is the app — start a load immediately.
+        refresh()
     }
 
-    fun setHourOfDay(hour: Double) {
-        hourFlow.value = hour.coerceIn(0.0, 24.0)
+    private fun toUiState(
+        result: DayResult,
+        previewHour: Double,
+        tick: Instant,
+        skin: SkinInputs,
+    ): DashboardUiState = when (result) {
+        DayResult.Loading -> DashboardUiState.Loading
+        is DayResult.Error -> DashboardUiState.Error(result.message)
+        is DayResult.Loaded -> {
+            // Live mode anchors "now" to the wall clock; dev mode tracks the scrubber.
+            val now = if (result.isLive) tick else result.day.hourToInstant(previewHour)
+            val dashboard = DashboardCompute.compute(
+                result.day, now, previewHour, skin.profile, skin.sessions, skin.attenuation,
+            )
+            DashboardUiState.Ready(dashboard, result.source, result.place, result.isLive)
+        }
+    }
+
+    /**
+     * (Re)load the live forecast: resolve a location (GPS → last-known → IP → timezone), fetch
+     * today's curve, and build the [UvDay]. A no-op in dev mode. Safe to call on launch, on Retry,
+     * and after a location-permission grant (upgrades to GPS without restart).
+     */
+    fun refresh() {
+        if (selectedScenarioIdFlow.value != null) return // dev fixture is pinned; nothing to fetch
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
+            dayResultFlow.value = DayResult.Loading
+            val resolved = locationProvider.resolve()
+            if (resolved == null) {
+                dayResultFlow.value = DayResult.Error("Couldn't determine your location.")
+                return@launch
+            }
+            val day = try {
+                val dayStart = clock.todayIn(zone).atStartOfDayIn(zone)
+                val forecast = forecastProvider.fetchForecast(resolved.point, dayStart)
+                UvDay.fromForecast(forecast, zone, clock)
+            } catch (_: Throwable) {
+                dayResultFlow.value = DayResult.Error("Couldn't load the UV forecast.")
+                return@launch
+            }
+            dayResultFlow.value = DayResult.Loaded(day, resolved.source, resolved.place, isLive = true)
+        }
+    }
+
+    /** Switch to a dev fixture (hidden long-press gesture). Pins the day; clears the live log. */
+    fun selectScenario(id: String) {
+        loadJob?.cancel()
+        selectedScenarioIdFlow.value = id
+        sessionsFlow.value = emptyList()
+        attenuationFlow.value = AttenuationTimeline.Empty
+        previewHourFlow.value = wallClockHourOfDay(clock, zone)
+        dayResultFlow.value = DayResult.Loaded(Fixtures.byId(id).day, source = null, place = null, isLive = false)
+    }
+
+    /** Return to live mode from a dev fixture and reload. */
+    fun goLive() {
+        if (selectedScenarioIdFlow.value == null) return
+        selectedScenarioIdFlow.value = null
+        sessionsFlow.value = emptyList()
+        attenuationFlow.value = AttenuationTimeline.Empty
+        refresh()
+    }
+
+    fun setPreviewHour(hour: Double) {
+        previewHourFlow.value = hour.coerceIn(0.0, 24.0)
     }
 
     fun setPhototype(p: SkinSensitivity) {
@@ -110,9 +237,9 @@ class DashboardViewModel(
     }
 
     /**
-     * Drop a fresh attenuation patch onto the timeline at [spf]'s transmittance starting at the
-     * current scrubber time. Past patches stay — reapplying composes by `min` per instant so it
-     * never retroactively strips coverage that an earlier patch already provided.
+     * Drop a fresh attenuation patch onto the timeline at [spf]'s transmittance starting at "now".
+     * Past patches stay — reapplying composes by `min` per instant so it never retroactively strips
+     * coverage that an earlier patch already provided.
      */
     fun applySunscreen(spf: Spf) {
         if (spf == Spf.Off) return
@@ -125,8 +252,8 @@ class DashboardViewModel(
     }
 
     /**
-     * Toggle the currently-outside state at the current scrubber time. Closes an open session if
-     * one exists; otherwise opens a new one at "now".
+     * Toggle the currently-outside state at "now". Closes an open session if one exists; otherwise
+     * opens a new one. In live mode "now" is the real wall clock; in dev mode it's the scrubber time.
      */
     fun toggleOutside() {
         val now = currentNow()
@@ -149,12 +276,38 @@ class DashboardViewModel(
         sessionsFlow.value = list.toMutableList().apply { removeAt(index) }
     }
 
-    private fun currentNow(): Instant =
-        Fixtures.byId(scenarioIdFlow.value).hourToInstant(hourFlow.value)
+    /** The effective "now": the real clock in live mode, the scrubber instant in dev mode. */
+    private fun currentNow(): Instant {
+        val result = dayResultFlow.value
+        return if (result is DayResult.Loaded && !result.isLive) {
+            result.day.hourToInstant(previewHourFlow.value)
+        } else {
+            clock.now()
+        }
+    }
+
+    private sealed interface DayResult {
+        data object Loading : DayResult
+        data class Error(val message: String) : DayResult
+        data class Loaded(
+            val day: UvDay,
+            val source: LocationSource?,
+            val place: String?,
+            val isLive: Boolean,
+        ) : DayResult
+    }
+
+    private data class SkinInputs(
+        val profile: SkinProfile,
+        val sessions: List<OutdoorSession>,
+        val attenuation: AttenuationTimeline,
+    )
 
     companion object {
-        private fun wallClockHourOfDay(): Double {
-            val dt = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+        private const val NOW_TICK_MILLIS = 60_000L
+
+        private fun wallClockHourOfDay(clock: Clock, zone: TimeZone): Double {
+            val dt = clock.now().toLocalDateTime(zone)
             return dt.hour + dt.minute / 60.0 + dt.second / 3600.0
         }
     }

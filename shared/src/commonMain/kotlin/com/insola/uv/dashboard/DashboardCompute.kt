@@ -1,10 +1,10 @@
 package com.insola.uv.dashboard
 
-import com.insola.uv.dev.Scenario
 import com.insola.uv.domain.AttenuationTimeline
 import com.insola.uv.domain.ExposureInterval
 import com.insola.uv.domain.OutdoorSession
 import com.insola.uv.domain.SkinProfile
+import com.insola.uv.domain.UvDay
 import com.insola.uv.domain.uvAt
 import com.insola.uv.dose.BurnModel
 import com.insola.uv.dose.BurnTier
@@ -18,22 +18,24 @@ import kotlin.time.Duration.Companion.milliseconds
  * Pure derivation of [DashboardState] from the user-controlled inputs. Kept out of the ViewModel
  * so the math is testable without spinning up a coroutine scope.
  *
- * Accumulated dose and vitamin-D both integrate strictly over the logged [OutdoorSession]s
- * (clipped to `[scenario.dayStart, now]`). Time-to-burn stays a hypothetical "if you were outside
- * continuously from now" projection — useful regardless of whether the user is currently outside.
+ * Every readout and integral is anchored to the real-time [now]; the scrubber's [previewHour] is a
+ * preview-only chart marker, decoupled from "now". Accumulated dose and vitamin-D both integrate
+ * strictly over the logged [OutdoorSession]s (clipped to `[day.dayStart, now]`). Time-to-burn stays
+ * a hypothetical "if you were outside continuously from now" projection — useful regardless of
+ * whether the user is currently outside.
  */
 object DashboardCompute {
     fun compute(
-        scenario: Scenario,
-        hourOfDay: Double,
+        day: UvDay,
+        now: Instant,
+        previewHour: Double,
         profile: SkinProfile,
         sessions: List<OutdoorSession> = emptyList(),
         attenuation: AttenuationTimeline = AttenuationTimeline.Empty,
     ): DashboardState {
-        val now = scenario.hourToInstant(hourOfDay)
-        val forecast = scenario.forecast
+        val forecast = day.forecast
         val currentUv = forecast.uvAt(now)
-        val elevation = SolarGeometry.solarElevationDegrees(scenario.location, now)
+        val elevation = SolarGeometry.solarElevationDegrees(day.location, now)
 
         // The effective UV transmittance at any instant is whatever the [attenuation] timeline
         // says — bare skin (1.0) where no patch covers it. Past-looking integrals slice each
@@ -50,7 +52,7 @@ object DashboardCompute {
         val timeOutside = effectiveIntervals
             .sumOf { (it.end - it.start).inWholeMilliseconds }
             .milliseconds
-        val daylight = SolarGeometry.daylightWindow(scenario.location, scenario.dayStart)
+        val daylight = SolarGeometry.daylightWindow(day.location, day.dayStart)
 
         val accumulated = DoseIntegrator.integrateOverIntervals(forecast, effectiveIntervals)
         val medThreshold = profile.effectiveMedUvIndexHours
@@ -80,15 +82,19 @@ object DashboardCompute {
         val vitDBucket = VitaminDModel.bucket(vitDScore, profile)
         // The Skin-tab sundial is a "your bare skin at today's peak UV" reference; the SPF
         // what-if preview is layered on top in the UI, so the summary itself stays bare.
-        val skinSummary = SkinSummary.compute(scenario, profile)
+        val skinSummary = SkinSummary.compute(day, profile)
         val isCurrentlyOutside = sessions.lastOrNull()?.let { it.isOpen && it.start <= now } == true
         val reapplyAdvisor = ReapplyAdvisor(
             forecast = forecast,
             safeDose = (medThreshold - accumulated).coerceAtLeast(0.0),
         )
+        // Solid "now" marker on the chart — the real wall-clock hour mapped into this day. Clamped
+        // to the plot range so a `now` that drifts past the modelled day still renders sensibly.
+        val nowHour = (day.instantToHour(now) ?: 0.0).coerceIn(0.0, 24.0)
         return DashboardState(
-            scenario = scenario,
-            hourOfDay = hourOfDay,
+            day = day,
+            previewHour = previewHour,
+            nowHour = nowHour,
             now = now,
             profile = profile,
             skinSummary = skinSummary,
@@ -112,6 +118,27 @@ object DashboardCompute {
             reapplyAdvisor = reapplyAdvisor,
         )
     }
+
+    /**
+     * Convenience overload for **scrubber-as-now** semantics: "now" is wherever [hourOfDay] points,
+     * and the preview marker sits at the same hour. This is the dev/fixture behavior (drag the
+     * scrubber to time-travel) and the default the unit tests drive — live mode calls the primary
+     * [compute] with a real-clock `now` instead.
+     */
+    fun compute(
+        day: UvDay,
+        hourOfDay: Double,
+        profile: SkinProfile,
+        sessions: List<OutdoorSession> = emptyList(),
+        attenuation: AttenuationTimeline = AttenuationTimeline.Empty,
+    ): DashboardState = compute(
+        day = day,
+        now = day.hourToInstant(hourOfDay),
+        previewHour = hourOfDay,
+        profile = profile,
+        sessions = sessions,
+        attenuation = attenuation,
+    )
 
     /**
      * Slice [interval] at the timeline's sampling grid so each sub-interval integrates against

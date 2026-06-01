@@ -109,9 +109,47 @@ Existing 5 tests rewritten to inject a `fullDaySession()` helper so their "conti
 - Switching scenarios clears the log because session `Instant`s are bound to the previous scenario's `dayStart`. Cheaper than translating them.
 - The chart uses raw `hourlyUv` for shape (not the interpolated `uvAt`) — the hourly samples are the source of truth and look identical at chart resolution.
 
-## Phase 2 — Real UV + real location
+## Phase 2 — Real UV + real location ✅ (2026-05-31)
 
-Not started.
+Turned the dev simulator into a real single-user app: on launch it resolves the device location, fetches today's hourly UV curve from Open-Meteo, and drives the existing dashboard live. See [`.air/plans/real-user-mode-live-uv.plan.md`](../.air/plans/real-user-mode-live-uv.plan.md).
+
+### Day-model bridge + now/scrubber decoupling (no behavior change)
+
+- `shared/.../domain/UvDay.kt` — neutral day-model (location, local-midnight `dayStart`, 25 hourly samples, `forecast`/`hourToInstant`/`instantToHour`/`dayEnd`, moved off `Scenario`). `fromForecast` anchors local midnight via `atStartOfDayIn` and resamples 25 nominal slots through `UvForecast.uvAt` (DST-safe). `Scenario` now wraps a `UvDay` + dev metadata.
+- `DashboardCompute.compute(day, now, previewHour, …)` anchors every readout/integral to real `now`; a `compute(day, hour, …)` overload preserves scrubber-as-now for tests. `DashboardState` gained `previewHour` + `nowHour`.
+- `UvCurveChart` splits the single marker into a solid **now** marker and a dashed draggable **preview** marker; open-session bands end at `nowHour`.
+
+### Networking
+
+- `data/OpenMeteoUvForecastProvider.kt` — Ktor + kotlinx-serialization against the keyless Air-Quality API (HTTPS). `@Serializable` DTOs reattach `utc_offset_seconds` to each local timestamp; `null` UV → 0.0.
+
+### Location
+
+- `location/LocationProvider.kt` (commonMain) — `LocationSource`, `ResolvedLocation`, never-throwing `LocationProvider`, `ChainedLocationProvider` (fresh fix → last-known → IP-geo → timezone-centroid), `IpLocationProvider` (ipwho.is), `TimezoneLocationProvider`, `DeviceLocationSource`.
+- `shared/src/androidMain/.../location/FusedDeviceLocationSource.kt` — Fused current/last-known fix, permission-checked, `withTimeoutOrNull` so a hung GPS never blocks launch.
+
+### Wiring & states
+
+- `DashboardViewModel` takes injected `UvForecastProvider` + `LocationProvider` + `devMode`; exposes `DashboardUiState` (Loading / Error+retry / Ready), loads live on launch + `refresh()`, ticks "now" ~1/min, stamps outdoor toggles at real `Clock.System.now()` in live mode.
+- `MainActivity` builds the `OkHttp` `HttpClient`, the provider chain, and the VM (factory), and registers a location-permission launcher that calls `refresh()` on grant (upgrades to GPS without restart). `App()` takes the VM + `devMode`.
+- `DashboardScreen` switches on phase, shows a location-source notice, and reveals the fixture picker + "Live" chip only via a long-press on the "UV today" title (debug builds).
+- Build config: added Ktor (core/content-negotiation/json/okhttp), kotlinx-serialization (+ plugin), play-services-location, the `androidMain` source set, coroutines-test, and `INTERNET` / `ACCESS_COARSE_LOCATION` / `ACCESS_FINE_LOCATION` permissions.
+
+### Checkpoint 2 — ✅ automated
+
+```
+JAVA_HOME=…/jdk-17 ./gradlew :shared:testAndroidHostTest   # 96 tests, 0 failures
+JAVA_HOME=…/jdk-17 ./gradlew :composeApp:assembleDebug      # BUILD SUCCESSFUL
+```
+
+New tests: now/scrubber decoupling (readouts track `now`, invariant to preview); Open-Meteo JSON decode (25 samples, slot 0 at local midnight, peak, null→0.0); DST spring-forward / fall-back day building; fallback-chain ordering (Gps > LastKnown > Ip > Timezone). **Manual on-device run (emulator with Play Services) still pending** — couldn't run hardware here.
+
+### Notes / decisions
+
+- The test task is `:shared:testAndroidHostTest` (the KMP-library plugin has no `:shared:testDebugUnitTest`).
+- "Now" tracks the real wall clock; the scrubber is preview-only. Dose/burn/vit-D integrate only over logged sessions up to real now — dragging the scrubber never moves the live numbers.
+- The chain always resolves *something* (timezone centroid is terminal), so the app shows a forecast even with permission denied / no Play Services, noting which source was used.
+- Manual constructor DI from `MainActivity` (the location stack needs an Activity `Context`); no Koin, no expect/actual factory.
 
 ## Phase 3 — Manual corrections + timeline + persistence
 

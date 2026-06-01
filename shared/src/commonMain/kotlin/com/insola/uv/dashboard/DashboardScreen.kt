@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,6 +22,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.FilterChip
@@ -31,6 +33,7 @@ import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -63,12 +66,52 @@ import com.insola.uv.domain.SkinSensitivity
 import com.insola.uv.domain.Spf
 import com.insola.uv.dose.BurnTier
 import com.insola.uv.dose.VitaminDModel
+import com.insola.uv.location.LocationSource
 import kotlinx.datetime.Instant
 import kotlin.time.Duration
 
 @Composable
-fun DashboardScreen(viewModel: DashboardViewModel, modifier: Modifier = Modifier) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
+fun DashboardScreen(viewModel: DashboardViewModel, devMode: Boolean = false, modifier: Modifier = Modifier) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    when (val s = uiState) {
+        DashboardUiState.Loading -> StatusScreen("Finding today's UV…", showSpinner = true, modifier = modifier)
+        is DashboardUiState.Error -> StatusScreen(
+            message = s.message,
+            showSpinner = false,
+            onRetry = viewModel::refresh,
+            modifier = modifier,
+        )
+        is DashboardUiState.Ready -> ReadyScreen(s, viewModel, devMode, modifier)
+    }
+}
+
+/** Plain centered Loading/Error surface shown before a [UvDay] is available. */
+@Composable
+private fun StatusScreen(
+    message: String,
+    showSpinner: Boolean,
+    modifier: Modifier = Modifier,
+    onRetry: (() -> Unit)? = null,
+) {
+    MaterialTheme {
+        Box(modifier = modifier.background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (showSpinner) CircularProgressIndicator()
+                Text(message, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+                if (onRetry != null) Button(onClick = onRetry) { Text("Retry") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReadyScreen(
+    ready: DashboardUiState.Ready,
+    viewModel: DashboardViewModel,
+    devMode: Boolean,
+    modifier: Modifier,
+) {
+    val state = ready.dashboard
     val sky = skyColors(state.solarElevationDeg)
     val scheme = MaterialTheme.colorScheme.copy(
         background = sky.background,
@@ -88,7 +131,7 @@ fun DashboardScreen(viewModel: DashboardViewModel, modifier: Modifier = Modifier
         // Text outside a Surface (e.g. the scenario description) reads LocalContentColor, which
         // defaults to black. Provide the bg-contrast color so labels stay readable at night.
         CompositionLocalProvider(LocalContentColor provides sky.onBackground) {
-            DashboardContent(state, viewModel, modifier.background(sky.background))
+            DashboardContent(ready, viewModel, devMode, modifier.background(sky.background))
         }
     }
 }
@@ -97,18 +140,31 @@ private enum class DashboardTab(val label: String) { Day("Day"), Skin("Skin") }
 
 @Composable
 private fun DashboardContent(
-    state: DashboardState,
+    ready: DashboardUiState.Ready,
     viewModel: DashboardViewModel,
+    devMode: Boolean,
     modifier: Modifier,
 ) {
+    val state = ready.dashboard
     var selectedTab by rememberSaveable { mutableStateOf(DashboardTab.Day) }
     // Skin-tab "what-if" — a pure preview that stretches the sundial's burn ticks; it never
     // feeds the Day-tab integrals (those are driven only by applied, decaying patches). The SPF
     // choice is scenario-independent; the UV level resets to each scenario's peak.
     var previewSpf by rememberSaveable { mutableStateOf(Spf.Off) }
-    var previewUv by remember(state.scenario.id) {
+    var previewUv by remember(state.day.dayStart) {
         mutableFloatStateOf(state.skinSummary.peakUv.toFloat())
     }
+    val selectedScenarioId by viewModel.selectedScenarioId.collectAsStateWithLifecycle()
+    // Hidden dev tools, revealed by long-pressing the card header (debug builds only).
+    var devToolsVisible by rememberSaveable { mutableStateOf(false) }
+    val scenarioName = viewModel.scenarios.firstOrNull { it.id == selectedScenarioId }?.name
+    // The card header names where the forecast is for: the resolved place (live) or the scenario.
+    val headerTitle = when {
+        !ready.isLive -> scenarioName ?: "UV today"
+        !ready.place.isNullOrBlank() -> ready.place!!
+        else -> "Current location"
+    }
+    val headerSubtitle = if (ready.isLive) locationPrecisionLabel(ready.locationSource) else null
     Column(modifier = modifier) {
         PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
             DashboardTab.entries.forEach { tab ->
@@ -125,14 +181,35 @@ private fun DashboardContent(
         ) {
             when (selectedTab) {
                 DashboardTab.Day -> {
-                    item { ScenarioPicker(viewModel.scenarios.map { it.id to it.name }, state.scenario.id, viewModel::selectScenario) }
-                    item { Text(state.scenario.description, style = MaterialTheme.typography.bodySmall) }
+                    if (devMode && devToolsVisible) {
+                        item {
+                            DevPanel(
+                                scenarios = viewModel.scenarios.map { it.id to it.name },
+                                selectedScenarioId = selectedScenarioId,
+                                isLive = ready.isLive,
+                                onSelectScenario = viewModel::selectScenario,
+                                onGoLive = viewModel::goLive,
+                            )
+                        }
+                    }
+                    if (!ready.isLive) {
+                        viewModel.scenarios.firstOrNull { it.id == selectedScenarioId }?.let { scenario ->
+                            item { Text(scenario.description, style = MaterialTheme.typography.bodySmall) }
+                        }
+                    }
                     item {
                         UvTodayCard(
+                            title = headerTitle,
+                            subtitle = headerSubtitle,
                             state = state,
-                            onHourChange = viewModel::setHourOfDay,
+                            onHourChange = viewModel::setPreviewHour,
                             onToggleOutside = viewModel::toggleOutside,
                             onRemoveSession = viewModel::removeSession,
+                            onTitleLongPress = if (devMode) {
+                                { devToolsVisible = !devToolsVisible }
+                            } else {
+                                null
+                            },
                         )
                     }
                     item {
@@ -170,23 +247,34 @@ private fun DashboardContent(
     }
 }
 
+/**
+ * Hidden dev tools (debug builds, revealed by long-pressing the "UV today" title): a "Live" chip
+ * to return to the real forecast, plus the fixture scenario picker.
+ */
 @Composable
-private fun ScenarioPicker(
-    options: List<Pair<String, String>>,
-    selectedId: String,
-    onSelect: (String) -> Unit,
+private fun DevPanel(
+    scenarios: List<Pair<String, String>>,
+    selectedScenarioId: String?,
+    isLive: Boolean,
+    onSelectScenario: (String) -> Unit,
+    onGoLive: () -> Unit,
 ) {
     Column {
-        Text("Scenario", style = MaterialTheme.typography.labelMedium)
+        Text("Dev scenarios", style = MaterialTheme.typography.labelMedium)
         Spacer(Modifier.height(4.dp))
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            options.forEach { (id, name) ->
+            FilterChip(
+                selected = isLive,
+                onClick = onGoLive,
+                label = { Text("Live forecast") },
+            )
+            scenarios.forEach { (id, name) ->
                 FilterChip(
-                    selected = id == selectedId,
-                    onClick = { onSelect(id) },
+                    selected = !isLive && id == selectedScenarioId,
+                    onClick = { onSelectScenario(id) },
                     label = { Text(name) },
                 )
             }
@@ -194,13 +282,28 @@ private fun ScenarioPicker(
     }
 }
 
+/**
+ * Caption under the location header conveying how precise the fix is. A precise GPS fix needs no
+ * qualifier (the place name stands alone); coarser sources are flagged as approximate.
+ */
+private fun locationPrecisionLabel(source: LocationSource?): String? = when (source) {
+    LocationSource.Gps -> null
+    LocationSource.LastKnown -> "Last known location"
+    LocationSource.Ip -> "Approximate · based on IP"
+    LocationSource.Timezone -> "Approximate · based on time zone"
+    null -> null
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun UvTodayCard(
+    title: String,
+    subtitle: String?,
     state: DashboardState,
     onHourChange: (Double) -> Unit,
     onToggleOutside: () -> Unit,
     onRemoveSession: (Int) -> Unit,
+    onTitleLongPress: (() -> Unit)? = null,
 ) {
     var showLog by remember { mutableStateOf(false) }
     Card(elevation = CardDefaults.cardElevation(2.dp), modifier = Modifier.fillMaxWidth()) {
@@ -210,8 +313,27 @@ private fun UvTodayCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Clock lives in the chart readout ("Sun 33° • 17:00") — don't repeat it here.
-                Text("UV today", style = MaterialTheme.typography.titleSmall)
+                // Header names the location (live) or scenario (dev). Clock lives in the chart
+                // readout ("Sun 33° • 17:00"), so it isn't repeated here. Long-press reveals the
+                // hidden dev tools (debug builds only).
+                Column(
+                    modifier = if (onTitleLongPress != null) {
+                        Modifier.pointerInput(Unit) {
+                            detectTapGestures(onLongPress = { onTitleLongPress() })
+                        }
+                    } else {
+                        Modifier
+                    },
+                ) {
+                    Text(title, style = MaterialTheme.typography.titleSmall)
+                    if (subtitle != null) {
+                        Text(
+                            subtitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 FilterChip(
                     selected = state.isCurrentlyOutside,
                     onClick = onToggleOutside,
@@ -224,8 +346,9 @@ private fun UvTodayCard(
             }
             Spacer(Modifier.height(8.dp))
             UvCurveChart(
-                scenario = state.scenario,
-                hourOfDay = state.hourOfDay,
+                day = state.day,
+                previewHour = state.previewHour,
+                nowHour = state.nowHour,
                 currentUv = state.currentUv,
                 solarElevationDeg = state.solarElevationDeg,
                 sunriseHour = state.sunriseHour,
@@ -274,8 +397,8 @@ private fun UvTodayCard(
 private fun SessionList(state: DashboardState, onRemove: (Int) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         state.sessions.forEachIndexed { index, session ->
-            val startHour = state.scenario.instantToHour(session.start) ?: 0.0
-            val endHour = session.end?.let { state.scenario.instantToHour(it) } ?: state.hourOfDay
+            val startHour = state.day.instantToHour(session.start) ?: 0.0
+            val endHour = session.end?.let { state.day.instantToHour(it) } ?: state.nowHour
             val durationMin = ((endHour - startHour).coerceAtLeast(0.0) * 60).toLong()
             val timeRange = if (session.isOpen) {
                 "${formatClock(startHour)} → now"

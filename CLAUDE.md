@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & run
 
-**JDK 17 is required.** Gradle 8.14 / AGP 9 do not support JDK 25 (JBR). Always invoke Gradle with `JAVA_HOME` pointing at a JDK 17 install:
+**JDK 17 is required.** Gradle 9.5.1 / AGP 9.2.1 do not support JDK 25 (JBR). Always invoke Gradle with `JAVA_HOME` pointing at a JDK 17 install:
 
 ```bash
 JAVA_HOME=/path/to/jdk-17 ./gradlew :composeApp:assembleDebug
@@ -12,7 +12,7 @@ JAVA_HOME=/path/to/jdk-17 ./gradlew :shared:build
 JAVA_HOME=/path/to/jdk-17 ./gradlew build
 ```
 
-Tests live in `shared/src/commonTest/` and run on the JVM via the Android unit-test target. Use `./gradlew :shared:testDebugUnitTest` (or `:shared:allTests` to include any other KMP targets that may get re-enabled later). Run a single test with `--tests "FQCN.method"`.
+Tests live in `shared/src/commonTest/` and run on the JVM via the Android host-test target. Use `./gradlew :shared:testAndroidHostTest` (or `:shared:allTests` to include any other KMP targets that may get re-enabled later). Run a single test with `--tests "FQCN.method"`. Note: there is **no** `:shared:testDebugUnitTest` task under the `com.android.kotlin.multiplatform.library` plugin — that name fails with "task not found".
 
 ## Architecture
 
@@ -27,10 +27,20 @@ Two-module Kotlin Multiplatform + Compose Multiplatform project:
 
 **Note:** `composeApp/src/` contains stray `commonMain`/`androidMain`/`iosMain` directories alongside the active `main/` source set — they are leftovers and not wired into the Android app's source sets. Add Android-only code to `composeApp/src/main/`.
 
+**Live vs. dev mode.** The dashboard is driven by a neutral day-model, `domain/UvDay.kt` (location + local-midnight `dayStart` + 25 hourly UV samples + hour↔instant helpers). Both sources produce one:
+- **Live** (default): on launch the app resolves the device location and fetches today's hourly UV curve. "Now" tracks the real wall clock (`DashboardViewModel` ticks ~1/min); the curve scrubber is a **preview-only** marker decoupled from now.
+- **Dev**: synthetic `dev/Fixtures.kt` scenarios, with scrubber-as-now. Reached only via a hidden long-press on the "UV today" title (debug builds, `devMode`), which reveals a scenario picker + a "Live" chip.
+
+`DashboardCompute.compute(day, now, previewHour, …)` is the pure pipeline both modes share; a `compute(day, hour, …)` overload gives scrubber-as-now for tests. `DashboardViewModel` exposes a `DashboardUiState` (Loading / Error+retry / Ready) so the UI can show fallback states.
+
+**Networking** (`data/OpenMeteoUvForecastProvider.kt`): Ktor + kotlinx-serialization against Open-Meteo's keyless Air-Quality API (HTTPS). The `OkHttp` engine + `HttpClient` are built in `MainActivity` (manual DI) and injected down.
+
+**Location** (`location/LocationProvider.kt`, commonMain interfaces): a `ChainedLocationProvider` falls through fresh Fused fix → last-known → IP-geo (ipwho.is) → timezone-centroid (always succeeds), each tagged with a `LocationSource`. Each resolved location also carries a human `place` name shown as the dashboard header: IP-geo returns the city directly, the timezone strategy derives it from the zone id, and device fixes are named via a `ReverseGeocoder` (Android `Geocoder` impl, `AndroidReverseGeocoder`). Non-GPS sources add an "Approximate · …" precision caption under the header. The Android Fused impl is `shared/src/androidMain/.../location/FusedDeviceLocationSource.kt` (permission-checked, `withTimeoutOrNull` so a hung GPS never blocks launch). Background collection is structured for but not built.
+
 ## Conventions
 
 - Package root: `com.insola.uv` (shared namespace `com.insola.uv.shared`, app id `com.insola.uv`).
-- DI is manual; introduce Koin only when a second injected dependency appears.
-- No networking, persistence, or navigation libraries are wired yet — see README "Next steps" before adding (Ktor + open-meteo, Navigation Compose Multiplatform, SQLDelight/Room).
+- DI is manual — constructor injection from `MainActivity` → `App()` → `DashboardViewModel` (the location stack needs an Activity `Context`). Introduce Koin only if the wiring grows materially.
+- Networking is wired (Ktor + kotlinx-serialization → Open-Meteo). Persistence and navigation are **not** — see README "Next steps" before adding (Navigation Compose Multiplatform, SQLDelight/Room). Offline caching is not yet built either.
 - Versions are centralized in `gradle/libs.versions.toml`; reference via `libs.*` accessors rather than hardcoding.
 - **Prefer a functional style when reasonable.** Favor expressions over statements, immutable values over `var`, and Kotlin's collection operators (`map`, `filter`, `fold`, `sumOf`, `zipWithNext`, `runningFold`, etc.) over index-based `for` loops with mutable accumulators. Extract per-element logic into pure helpers so the top-level shape reads as a pipeline. Drop down to imperative loops only when the functional version is materially less clear, allocates unacceptably on a hot path, or needs early termination that doesn't fit `takeWhile`/`firstOrNull`.
