@@ -1,10 +1,13 @@
 package com.insola.uv.domain
 
+import com.insola.uv.solar.SolarGeometry
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.todayIn
+import kotlin.math.PI
+import kotlin.math.sin
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -75,5 +78,27 @@ data class UvDay(
                 hourlyUv = hourlyUv,
             )
         }
+
+        /**
+         * A network-free **clear-sky estimate** for today at [location]: UV ∝ sin(solar elevation),
+         * scaled so an overhead sun peaks near [CLEAR_SKY_PEAK_UV]. Used as the instant fallback so
+         * the dashboard always renders something plausible while the live forecast loads (or if it
+         * can't be reached). It ignores clouds/ozone/altitude — it's an estimate, labelled as such.
+         */
+        fun clearSkyEstimate(
+            location: GeoPoint,
+            zone: TimeZone,
+            clock: Clock = Clock.System,
+        ): UvDay {
+            val dayStart = clock.todayIn(zone).atStartOfDayIn(zone)
+            val hourlyUv = (0..24).map { hour ->
+                val elevation = SolarGeometry.solarElevationDegrees(location, dayStart + hour.hours)
+                if (elevation <= 0.0) 0.0 else CLEAR_SKY_PEAK_UV * sin(elevation * PI / 180.0)
+            }
+            return UvDay(location = location, dayStart = dayStart, hourlyUv = hourlyUv)
+        }
+
+        /** Clear-sky UV index at an overhead sun — a strong tropical noon. */
+        private const val CLEAR_SKY_PEAK_UV: Double = 12.0
     }
 }

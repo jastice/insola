@@ -72,46 +72,9 @@ import kotlin.time.Duration
 
 @Composable
 fun DashboardScreen(viewModel: DashboardViewModel, devMode: Boolean = false, modifier: Modifier = Modifier) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    when (val s = uiState) {
-        DashboardUiState.Loading -> StatusScreen("Finding today's UV…", showSpinner = true, modifier = modifier)
-        is DashboardUiState.Error -> StatusScreen(
-            message = s.message,
-            showSpinner = false,
-            onRetry = viewModel::refresh,
-            modifier = modifier,
-        )
-        is DashboardUiState.Ready -> ReadyScreen(s, viewModel, devMode, modifier)
-    }
-}
-
-/** Plain centered Loading/Error surface shown before a [UvDay] is available. */
-@Composable
-private fun StatusScreen(
-    message: String,
-    showSpinner: Boolean,
-    modifier: Modifier = Modifier,
-    onRetry: (() -> Unit)? = null,
-) {
-    MaterialTheme {
-        Box(modifier = modifier.background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (showSpinner) CircularProgressIndicator()
-                Text(message, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
-                if (onRetry != null) Button(onClick = onRetry) { Text("Retry") }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ReadyScreen(
-    ready: DashboardUiState.Ready,
-    viewModel: DashboardViewModel,
-    devMode: Boolean,
-    modifier: Modifier,
-) {
-    val state = ready.dashboard
+    // The dashboard always renders — load status is inline, never a blocking gate.
+    val ui by viewModel.uiState.collectAsStateWithLifecycle()
+    val state = ui.dashboard
     val sky = skyColors(state.solarElevationDeg)
     val scheme = MaterialTheme.colorScheme.copy(
         background = sky.background,
@@ -131,7 +94,7 @@ private fun ReadyScreen(
         // Text outside a Surface (e.g. the scenario description) reads LocalContentColor, which
         // defaults to black. Provide the bg-contrast color so labels stay readable at night.
         CompositionLocalProvider(LocalContentColor provides sky.onBackground) {
-            DashboardContent(ready, viewModel, devMode, modifier.background(sky.background))
+            DashboardContent(ui, viewModel, devMode, modifier.background(sky.background))
         }
     }
 }
@@ -140,12 +103,13 @@ private enum class DashboardTab(val label: String) { Day("Day"), Skin("Skin") }
 
 @Composable
 private fun DashboardContent(
-    ready: DashboardUiState.Ready,
+    ui: DashboardUiState,
     viewModel: DashboardViewModel,
     devMode: Boolean,
     modifier: Modifier,
 ) {
-    val state = ready.dashboard
+    val state = ui.dashboard
+    val isFixture = ui.mode == DayMode.Fixture
     var selectedTab by rememberSaveable { mutableStateOf(DashboardTab.Day) }
     // Skin-tab "what-if" — a pure preview that stretches the sundial's burn ticks; it never
     // feeds the Day-tab integrals (those are driven only by applied, decaying patches). The SPF
@@ -160,11 +124,15 @@ private fun DashboardContent(
     val scenarioName = viewModel.scenarios.firstOrNull { it.id == selectedScenarioId }?.name
     // The card header names where the forecast is for: the resolved place (live) or the scenario.
     val headerTitle = when {
-        !ready.isLive -> scenarioName ?: "UV today"
-        !ready.place.isNullOrBlank() -> ready.place!!
+        isFixture -> scenarioName ?: "UV today"
+        !ui.place.isNullOrBlank() -> ui.place!!
         else -> "Current location"
     }
-    val headerSubtitle = if (ready.isLive) locationPrecisionLabel(ready.locationSource) else null
+    val headerSubtitle = when {
+        isFixture -> null
+        ui.mode == DayMode.LiveEstimate -> "Estimated clear-sky UV"
+        else -> locationPrecisionLabel(ui.locationSource)
+    }
     Column(modifier = modifier) {
         PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
             DashboardTab.entries.forEach { tab ->
@@ -186,16 +154,19 @@ private fun DashboardContent(
                             DevPanel(
                                 scenarios = viewModel.scenarios.map { it.id to it.name },
                                 selectedScenarioId = selectedScenarioId,
-                                isLive = ready.isLive,
+                                isLive = !isFixture,
                                 onSelectScenario = viewModel::selectScenario,
                                 onGoLive = viewModel::goLive,
                             )
                         }
                     }
-                    if (!ready.isLive) {
+                    if (isFixture) {
                         viewModel.scenarios.firstOrNull { it.id == selectedScenarioId }?.let { scenario ->
                             item { Text(scenario.description, style = MaterialTheme.typography.bodySmall) }
                         }
+                    }
+                    if (ui.refreshing || ui.error != null) {
+                        item { InlineLoadStatus(refreshing = ui.refreshing, error = ui.error, onRetry = viewModel::refresh) }
                     }
                     item {
                         UvTodayCard(
@@ -292,6 +263,24 @@ private fun locationPrecisionLabel(source: LocationSource?): String? = when (sou
     LocationSource.Ip -> "Approximate · based on IP"
     LocationSource.Timezone -> "Approximate · based on time zone"
     null -> null
+}
+
+/** Inline, non-blocking load status: a small spinner while fetching, or an error + Retry. */
+@Composable
+private fun InlineLoadStatus(refreshing: Boolean, error: String?, onRetry: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (refreshing) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            Text("Updating forecast…", style = MaterialTheme.typography.bodySmall)
+        } else if (error != null) {
+            Text(error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            TextButton(onClick = onRetry) { Text("Retry") }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

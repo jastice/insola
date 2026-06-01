@@ -28,10 +28,10 @@ Two-module Kotlin Multiplatform + Compose Multiplatform project:
 **Note:** `composeApp/src/` contains stray `commonMain`/`androidMain`/`iosMain` directories alongside the active `main/` source set — they are leftovers and not wired into the Android app's source sets. Add Android-only code to `composeApp/src/main/`.
 
 **Live vs. dev mode.** The dashboard is driven by a neutral day-model, `domain/UvDay.kt` (location + local-midnight `dayStart` + 25 hourly UV samples + hour↔instant helpers). Both sources produce one:
-- **Live** (default): on launch the app resolves the device location and fetches today's hourly UV curve. "Now" tracks the real wall clock (`DashboardViewModel` ticks ~1/min); the curve scrubber is a **preview-only** marker decoupled from now.
-- **Dev**: synthetic `dev/Fixtures.kt` scenarios, with scrubber-as-now. Reached only via a hidden long-press on the "UV today" title (debug builds, `devMode`), which reveals a scenario picker + a "Live" chip.
+- **Live** (default): the dashboard opens **immediately** on a network-free clear-sky **estimate** (`UvDay.clearSkyEstimate`, synthesized from solar geometry at the device-timezone city), then upgrades in place to the real Open-Meteo forecast once it loads. "Now" tracks the real wall clock (`DashboardViewModel` ticks ~1/min); the curve scrubber is a **preview-only** marker decoupled from now. There is **no blocking load screen** — loading and any fetch error surface as an inline status row (small spinner / "Retry"); a failed fetch just leaves the estimate on screen (`DayMode.LiveEstimate`).
+- **Dev**: synthetic `dev/Fixtures.kt` scenarios (`DayMode.Fixture`), with scrubber-as-now. Reached only via a hidden long-press on the card header (debug builds, `devMode`), which reveals a scenario picker + a "Live forecast" chip.
 
-`DashboardCompute.compute(day, now, previewHour, …)` is the pure pipeline both modes share; a `compute(day, hour, …)` overload gives scrubber-as-now for tests. `DashboardViewModel` exposes a `DashboardUiState` (Loading / Error+retry / Ready) so the UI can show fallback states.
+`DashboardCompute.compute(day, now, previewHour, …)` is the pure pipeline all modes share; a `compute(day, hour, …)` overload gives scrubber-as-now for tests. `DashboardViewModel` exposes a single always-renderable `DashboardUiState` (dashboard + `DayMode` + inline `refreshing`/`error`).
 
 **Networking** (`data/OpenMeteoUvForecastProvider.kt`): Ktor + kotlinx-serialization against Open-Meteo's keyless Air-Quality API (HTTPS). The `OkHttp` engine + `HttpClient` are built in `MainActivity` (manual DI) and injected down.
 

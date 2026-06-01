@@ -144,43 +144,47 @@ class TimezoneLocationProvider(
     private val zoneId: () -> String = { TimeZone.currentSystemDefault().id },
     private val clock: Clock = Clock.System,
 ) : LocationProvider {
-    override suspend fun resolve(): ResolvedLocation {
-        val id = zoneId()
-        val point = CENTROIDS[id] ?: offsetCentroid(id)
-        return ResolvedLocation(point, LocationSource.Timezone, placeFromZone(id))
-    }
-
-    /** "Europe/Berlin" → "Berlin", "America/New_York" → "New York". Null for bare-offset zones (UTC, Etc). */
-    private fun placeFromZone(id: String): String? {
-        if ('/' !in id || id.startsWith("Etc/")) return null
-        return id.substringAfterLast('/').replace('_', ' ').takeIf { it.isNotBlank() }
-    }
-
-    private fun offsetCentroid(id: String): GeoPoint {
-        val offsetSeconds = try {
-            clock.now().offsetIn(TimeZone.of(id)).totalSeconds
-        } catch (_: Throwable) {
-            0
-        }
-        val longitude = (offsetSeconds / 3600.0 * 15.0).coerceIn(-180.0, 180.0)
-        return GeoPoint(latitude = 0.0, longitude = longitude)
-    }
-
-    private companion object {
-        /** Approximate population centroids for common zones — good enough for a UV curve. */
-        val CENTROIDS: Map<String, GeoPoint> = mapOf(
-            "Europe/Berlin" to GeoPoint(52.52, 13.40),
-            "Europe/Paris" to GeoPoint(48.85, 2.35),
-            "Europe/London" to GeoPoint(51.51, -0.13),
-            "Europe/Madrid" to GeoPoint(40.42, -3.70),
-            "Europe/Rome" to GeoPoint(41.90, 12.50),
-            "America/New_York" to GeoPoint(40.71, -74.01),
-            "America/Los_Angeles" to GeoPoint(34.05, -118.24),
-            "America/Chicago" to GeoPoint(41.88, -87.63),
-            "Asia/Singapore" to GeoPoint(1.35, 103.82),
-            "Asia/Tokyo" to GeoPoint(35.68, 139.69),
-            "Australia/Sydney" to GeoPoint(-33.87, 151.21),
-            "Atlantic/Reykjavik" to GeoPoint(64.13, -21.94),
-        )
-    }
+    override suspend fun resolve(): ResolvedLocation = timezoneCentroid(zoneId(), clock)
 }
+
+/**
+ * Synchronous timezone-centroid resolution — shared by [TimezoneLocationProvider] and the
+ * ViewModel's instant fallback estimate (so the dashboard can render a plausible curve at the
+ * user's city without waiting on GPS/IP/network).
+ */
+internal fun timezoneCentroid(zoneId: String, clock: Clock): ResolvedLocation {
+    val point = TIMEZONE_CENTROIDS[zoneId] ?: offsetCentroid(zoneId, clock)
+    return ResolvedLocation(point, LocationSource.Timezone, placeFromZone(zoneId))
+}
+
+/** "Europe/Berlin" → "Berlin", "America/New_York" → "New York". Null for bare-offset zones (UTC, Etc). */
+private fun placeFromZone(id: String): String? {
+    if ('/' !in id || id.startsWith("Etc/")) return null
+    return id.substringAfterLast('/').replace('_', ' ').takeIf { it.isNotBlank() }
+}
+
+private fun offsetCentroid(id: String, clock: Clock): GeoPoint {
+    val offsetSeconds = try {
+        clock.now().offsetIn(TimeZone.of(id)).totalSeconds
+    } catch (_: Throwable) {
+        0
+    }
+    val longitude = (offsetSeconds / 3600.0 * 15.0).coerceIn(-180.0, 180.0)
+    return GeoPoint(latitude = 0.0, longitude = longitude)
+}
+
+/** Approximate population centroids for common zones — good enough for a UV curve. */
+private val TIMEZONE_CENTROIDS: Map<String, GeoPoint> = mapOf(
+    "Europe/Berlin" to GeoPoint(52.52, 13.40),
+    "Europe/Paris" to GeoPoint(48.85, 2.35),
+    "Europe/London" to GeoPoint(51.51, -0.13),
+    "Europe/Madrid" to GeoPoint(40.42, -3.70),
+    "Europe/Rome" to GeoPoint(41.90, 12.50),
+    "America/New_York" to GeoPoint(40.71, -74.01),
+    "America/Los_Angeles" to GeoPoint(34.05, -118.24),
+    "America/Chicago" to GeoPoint(41.88, -87.63),
+    "Asia/Singapore" to GeoPoint(1.35, 103.82),
+    "Asia/Tokyo" to GeoPoint(35.68, 139.69),
+    "Australia/Sydney" to GeoPoint(-33.87, 151.21),
+    "Atlantic/Reykjavik" to GeoPoint(64.13, -21.94),
+)

@@ -16,6 +16,7 @@ import com.insola.uv.dose.BurnTier
 import com.insola.uv.dose.VitaminDModel
 import com.insola.uv.location.LocationProvider
 import com.insola.uv.location.LocationSource
+import com.insola.uv.location.timezoneCentroid
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -78,24 +79,36 @@ data class DashboardState(
     val reapplyAdvisor: ReapplyAdvisor,
 )
 
-/**
- * Top-level screen state. The day-model is loaded asynchronously in live mode (location → forecast),
- * so the dashboard is only [Ready] once a [UvDay] exists; until then the UI shows [Loading] or
- * [Error] (with a working retry).
- */
-sealed interface DashboardUiState {
-    data object Loading : DashboardUiState
-    data class Error(val message: String) : DashboardUiState
-    data class Ready(
-        val dashboard: DashboardState,
-        /** Where the live location came from (for the precision hint); null in dev/fixture mode. */
-        val locationSource: LocationSource?,
-        /** Human place name (city / metro) for the header, when one could be resolved. */
-        val place: String?,
-        /** True when driven by the live forecast; false when a dev fixture is selected. */
-        val isLive: Boolean,
-    ) : DashboardUiState
+/** What's driving the day-model right now. */
+enum class DayMode {
+    /** Real Open-Meteo forecast for the resolved location. */
+    LiveForecast,
+
+    /** Network-free clear-sky estimate (still loading, or the forecast couldn't be reached). */
+    LiveEstimate,
+
+    /** A hidden dev fixture (scrubber-as-now). */
+    Fixture,
 }
+
+/**
+ * The dashboard is **always** renderable — there is no blocking pre-screen. It opens on a clear-sky
+ * [DayMode.LiveEstimate] at the device-timezone city, then upgrades in place to [DayMode.LiveForecast]
+ * once the real forecast loads. [refreshing] and [error] surface inline (a small status row + retry),
+ * never as a full-screen gate, so a failed/slow network just leaves the estimate on screen.
+ */
+data class DashboardUiState(
+    val dashboard: DashboardState,
+    /** Human place name (city / metro) for the header, when one could be resolved. */
+    val place: String?,
+    /** Where the live location came from (drives the precision hint); null in fixture mode. */
+    val locationSource: LocationSource?,
+    val mode: DayMode,
+    /** A forecast load is in flight — show an inline spinner. */
+    val refreshing: Boolean,
+    /** Inline error (with retry), or null. Set when the live forecast couldn't be reached. */
+    val error: String?,
+)
 
 /**
  * Drives the dashboard from either the live forecast (default) or a hidden dev fixture.
@@ -117,8 +130,8 @@ class DashboardViewModel(
     private val sessionsFlow = MutableStateFlow<List<OutdoorSession>>(emptyList())
     private val attenuationFlow = MutableStateFlow(AttenuationTimeline.Empty)
 
-    /** The loaded day (live or fixture), or its loading/error state. */
-    private val dayResultFlow = MutableStateFlow<DayResult>(DayResult.Loading)
+    /** The current day-model + load status. Seeded synchronously so the first frame already renders. */
+    private val loadStateFlow = MutableStateFlow(initialEstimate())
 
     /** Selected fixture id, or null while in live mode. Drives the dev picker highlight + "Live" chip. */
     private val selectedScenarioIdFlow = MutableStateFlow<String?>(null)
@@ -147,62 +160,105 @@ class DashboardViewModel(
     val scenarios: List<Scenario> = Fixtures.all
 
     val uiState: StateFlow<DashboardUiState> =
-        combine(dayResultFlow, previewHourFlow, nowTickFlow, skinInputsFlow) { result, previewHour, tick, skin ->
-            toUiState(result, previewHour, tick, skin)
+        combine(loadStateFlow, previewHourFlow, nowTickFlow, skinInputsFlow) { load, previewHour, tick, skin ->
+            toUiState(load, previewHour, tick, skin)
         }.stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
-            initialValue = DashboardUiState.Loading,
+            initialValue = toUiState(
+                loadStateFlow.value,
+                previewHourFlow.value,
+                nowTickFlow.value,
+                SkinInputs(profileFlow.value, sessionsFlow.value, attenuationFlow.value),
+            ),
         )
 
     init {
-        // Live data is the app — start a load immediately.
+        // The screen already shows the estimate; load the real forecast over it.
         refresh()
     }
 
     private fun toUiState(
-        result: DayResult,
+        load: LoadState,
         previewHour: Double,
         tick: Instant,
         skin: SkinInputs,
-    ): DashboardUiState = when (result) {
-        DayResult.Loading -> DashboardUiState.Loading
-        is DayResult.Error -> DashboardUiState.Error(result.message)
-        is DayResult.Loaded -> {
-            // Live mode anchors "now" to the wall clock; dev mode tracks the scrubber.
-            val now = if (result.isLive) tick else result.day.hourToInstant(previewHour)
-            val dashboard = DashboardCompute.compute(
-                result.day, now, previewHour, skin.profile, skin.sessions, skin.attenuation,
-            )
-            DashboardUiState.Ready(dashboard, result.source, result.place, result.isLive)
-        }
+    ): DashboardUiState {
+        // Fixture mode tracks the scrubber; live modes anchor "now" to the wall clock.
+        val now = if (load.mode == DayMode.Fixture) load.day.hourToInstant(previewHour) else tick
+        val dashboard = DashboardCompute.compute(
+            load.day, now, previewHour, skin.profile, skin.sessions, skin.attenuation,
+        )
+        return DashboardUiState(
+            dashboard = dashboard,
+            place = load.place,
+            locationSource = load.source,
+            mode = load.mode,
+            refreshing = load.refreshing,
+            error = load.error,
+        )
     }
 
     /**
      * (Re)load the live forecast: resolve a location (GPS → last-known → IP → timezone), fetch
      * today's curve, and build the [UvDay]. A no-op in dev mode. Safe to call on launch, on Retry,
      * and after a location-permission grant (upgrades to GPS without restart).
+     *
+     * Never blocks the screen: the estimate stays up while loading, and a failed fetch leaves the
+     * estimate in place with an inline error rather than wiping the dashboard.
      */
     fun refresh() {
         if (selectedScenarioIdFlow.value != null) return // dev fixture is pinned; nothing to fetch
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
-            dayResultFlow.value = DayResult.Loading
+            loadStateFlow.value = loadStateFlow.value.copy(refreshing = true, error = null)
             val resolved = locationProvider.resolve()
-            if (resolved == null) {
-                dayResultFlow.value = DayResult.Error("Couldn't determine your location.")
-                return@launch
+            // Re-anchor the estimate to the resolved location so the city/curve reflect the best fix
+            // we have even before (or without) the network forecast.
+            if (resolved != null) {
+                loadStateFlow.value = LoadState(
+                    day = UvDay.clearSkyEstimate(resolved.point, zone, clock),
+                    place = resolved.place,
+                    source = resolved.source,
+                    mode = DayMode.LiveEstimate,
+                    refreshing = true,
+                    error = null,
+                )
             }
+            val point = resolved?.point ?: loadStateFlow.value.day.location
             val day = try {
                 val dayStart = clock.todayIn(zone).atStartOfDayIn(zone)
-                val forecast = forecastProvider.fetchForecast(resolved.point, dayStart)
+                val forecast = forecastProvider.fetchForecast(point, dayStart)
                 UvDay.fromForecast(forecast, zone, clock)
             } catch (_: Throwable) {
-                dayResultFlow.value = DayResult.Error("Couldn't load the UV forecast.")
+                loadStateFlow.value = loadStateFlow.value.copy(
+                    refreshing = false,
+                    error = "Couldn't reach the forecast service — showing a clear-sky estimate.",
+                )
                 return@launch
             }
-            dayResultFlow.value = DayResult.Loaded(day, resolved.source, resolved.place, isLive = true)
+            loadStateFlow.value = LoadState(
+                day = day,
+                place = resolved?.place ?: loadStateFlow.value.place,
+                source = resolved?.source,
+                mode = DayMode.LiveForecast,
+                refreshing = false,
+                error = null,
+            )
         }
+    }
+
+    /** Synchronous opening estimate: clear-sky curve at the device-timezone city (no GPS/IP/network). */
+    private fun initialEstimate(): LoadState {
+        val located = timezoneCentroid(zone.id, clock)
+        return LoadState(
+            day = UvDay.clearSkyEstimate(located.point, zone, clock),
+            place = located.place,
+            source = located.source,
+            mode = DayMode.LiveEstimate,
+            refreshing = true,
+            error = null,
+        )
     }
 
     /** Switch to a dev fixture (hidden long-press gesture). Pins the day; clears the live log. */
@@ -212,15 +268,23 @@ class DashboardViewModel(
         sessionsFlow.value = emptyList()
         attenuationFlow.value = AttenuationTimeline.Empty
         previewHourFlow.value = wallClockHourOfDay(clock, zone)
-        dayResultFlow.value = DayResult.Loaded(Fixtures.byId(id).day, source = null, place = null, isLive = false)
+        loadStateFlow.value = LoadState(
+            day = Fixtures.byId(id).day,
+            place = null,
+            source = null,
+            mode = DayMode.Fixture,
+            refreshing = false,
+            error = null,
+        )
     }
 
-    /** Return to live mode from a dev fixture and reload. */
+    /** Return to live mode from a dev fixture: reset to the estimate and reload. */
     fun goLive() {
         if (selectedScenarioIdFlow.value == null) return
         selectedScenarioIdFlow.value = null
         sessionsFlow.value = emptyList()
         attenuationFlow.value = AttenuationTimeline.Empty
+        loadStateFlow.value = initialEstimate()
         refresh()
     }
 
@@ -276,26 +340,20 @@ class DashboardViewModel(
         sessionsFlow.value = list.toMutableList().apply { removeAt(index) }
     }
 
-    /** The effective "now": the real clock in live mode, the scrubber instant in dev mode. */
+    /** The effective "now": the scrubber instant in fixture mode, the real clock otherwise. */
     private fun currentNow(): Instant {
-        val result = dayResultFlow.value
-        return if (result is DayResult.Loaded && !result.isLive) {
-            result.day.hourToInstant(previewHourFlow.value)
-        } else {
-            clock.now()
-        }
+        val load = loadStateFlow.value
+        return if (load.mode == DayMode.Fixture) load.day.hourToInstant(previewHourFlow.value) else clock.now()
     }
 
-    private sealed interface DayResult {
-        data object Loading : DayResult
-        data class Error(val message: String) : DayResult
-        data class Loaded(
-            val day: UvDay,
-            val source: LocationSource?,
-            val place: String?,
-            val isLive: Boolean,
-        ) : DayResult
-    }
+    private data class LoadState(
+        val day: UvDay,
+        val place: String?,
+        val source: LocationSource?,
+        val mode: DayMode,
+        val refreshing: Boolean,
+        val error: String?,
+    )
 
     private data class SkinInputs(
         val profile: SkinProfile,

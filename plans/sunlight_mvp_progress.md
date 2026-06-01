@@ -130,9 +130,10 @@ Turned the dev simulator into a real single-user app: on launch it resolves the 
 
 ### Wiring & states
 
-- `DashboardViewModel` takes injected `UvForecastProvider` + `LocationProvider` + `devMode`; exposes `DashboardUiState` (Loading / Error+retry / Ready), loads live on launch + `refresh()`, ticks "now" ~1/min, stamps outdoor toggles at real `Clock.System.now()` in live mode.
+- `DashboardViewModel` takes injected `UvForecastProvider` + `LocationProvider` + `devMode`; exposes a single always-renderable `DashboardUiState` (dashboard + `DayMode` + inline `refreshing`/`error`). The screen opens immediately on a clear-sky **estimate** (`UvDay.clearSkyEstimate`) at the device-timezone city — no blocking load — then `refresh()` upgrades it to the real forecast in place; a failed fetch leaves the estimate up with an inline Retry. Ticks "now" ~1/min, stamps outdoor toggles at real `Clock.System.now()` in live mode.
 - `MainActivity` builds the `OkHttp` `HttpClient`, the provider chain, and the VM (factory), and registers a location-permission launcher that calls `refresh()` on grant (upgrades to GPS without restart). `App()` takes the VM + `devMode`.
-- `DashboardScreen` switches on phase, shows a location-source notice, and reveals the fixture picker + "Live" chip only via a long-press on the "UV today" title (debug builds).
+- `DashboardScreen` always renders the dashboard; the card header names the resolved place (city/metro) with an "Approximate · …" / "Estimated clear-sky UV" caption when not a precise GPS forecast, and an inline spinner/Retry row while loading or on error. A long-press on the header reveals the fixture picker + "Live forecast" chip (debug builds).
+- Place names: IP-geo (ipwho.is) returns the city directly; the timezone strategy derives it from the zone id; precise device fixes are named via a `ReverseGeocoder` (`AndroidReverseGeocoder`, Android `Geocoder`).
 - Build config: added Ktor (core/content-negotiation/json/okhttp), kotlinx-serialization (+ plugin), play-services-location, the `androidMain` source set, coroutines-test, and `INTERNET` / `ACCESS_COARSE_LOCATION` / `ACCESS_FINE_LOCATION` permissions.
 
 ### Checkpoint 2 — ✅ automated
