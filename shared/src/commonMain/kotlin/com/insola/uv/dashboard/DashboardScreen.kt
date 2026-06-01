@@ -25,6 +25,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -183,6 +184,9 @@ private fun DashboardContent(
                             title = headerTitle,
                             subtitle = headerSubtitle,
                             state = state,
+                            // Live modes can re-resolve location + re-fetch; fixtures are pinned.
+                            onRefresh = if (isFixture) null else viewModel::refresh,
+                            refreshing = ui.refreshing,
                             onHourChange = viewModel::setPreviewHour,
                             onToggleOutside = viewModel::toggleOutside,
                             onRemoveSession = viewModel::removeSession,
@@ -340,6 +344,9 @@ private fun UvTodayCard(
     onHourChange: (Double) -> Unit,
     onToggleOutside: () -> Unit,
     onRemoveSession: (Int) -> Unit,
+    /** Re-resolve location + re-fetch the forecast. Null hides the control (e.g. pinned fixtures). */
+    onRefresh: (() -> Unit)? = null,
+    refreshing: Boolean = false,
     onTitleLongPress: (() -> Unit)? = null,
 ) {
     var showLog by remember { mutableStateOf(false) }
@@ -371,15 +378,33 @@ private fun UvTodayCard(
                         )
                     }
                 }
-                FilterChip(
-                    selected = state.isCurrentlyOutside,
-                    onClick = onToggleOutside,
-                    label = { Text(if (state.isCurrentlyOutside) "Outside" else "Inside") },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = OutdoorGreen,
-                        selectedLabelColor = Color.White,
-                    ),
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (onRefresh != null) {
+                        IconButton(onClick = onRefresh, enabled = !refreshing) {
+                            if (refreshing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                // Unicode refresh glyph — avoids a material-icons dependency for one icon.
+                                Text("↻", style = MaterialTheme.typography.titleMedium)
+                            }
+                        }
+                    }
+                    FilterChip(
+                        selected = state.isCurrentlyOutside,
+                        onClick = onToggleOutside,
+                        label = { Text(if (state.isCurrentlyOutside) "Outside" else "Inside") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = OutdoorGreen,
+                            selectedLabelColor = Color.White,
+                        ),
+                    )
+                }
             }
             Spacer(Modifier.height(8.dp))
             UvCurveChart(

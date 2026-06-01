@@ -37,7 +37,10 @@ class FusedDeviceLocationSource(context: Context) : DeviceLocationSource {
         if (!hasPermission()) return null
         val cancellation = CancellationTokenSource()
         val point = withTimeoutOrNull(FIX_TIMEOUT_MS) {
-            client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, cancellation.token)
+            // HIGH_ACCURACY engages the GPS provider. BALANCED relies on network/passive location,
+            // which on an emulator never sees the injected `geo fix` (a GPS-provider fix) and so
+            // times out into the stale last-known default. A one-shot fix, bounded by the timeout.
+            client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cancellation.token)
                 .awaitOrNull()
                 ?.let { GeoPoint(it.latitude, it.longitude) }
         }
