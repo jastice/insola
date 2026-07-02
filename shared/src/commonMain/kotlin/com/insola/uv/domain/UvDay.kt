@@ -39,8 +39,6 @@ data class UvDay(
         )
     }
 
-    val dayEnd: Instant get() = dayStart + 24.hours
-
     /** Convert an hour-of-day (0..24) to the corresponding [Instant] within this day. */
     fun hourToInstant(hour: Double): Instant =
         dayStart + (hour * 3_600_000.0).toLong().milliseconds
@@ -57,27 +55,22 @@ data class UvDay(
 
     companion object {
         /**
-         * Build today's [UvDay] from a fetched [forecast] by anchoring [dayStart] at local midnight
-         * in [zone] and resampling 25 nominal hourly slots through the tested [UvForecast.uvAt].
+         * Build a [UvDay] from a fetched [forecast] by anchoring at the caller's [dayStart] (the
+         * instant of local midnight) and resampling 25 nominal hourly slots through the tested
+         * [UvForecast.uvAt].
          *
-         * Resampling (rather than slicing 25 raw entries) is what makes the day **DST-safe**:
-         * [LocalDate.atStartOfDayIn] resolves the real instant of local midnight even on 23/25-hour
-         * days, and each "local hour H" then maps to `dayStart + H.hours`, the same nominal grid the
-         * fixtures use. Hours outside the forecast window clamp to its endpoints (see [UvForecast.uvAt]).
+         * [dayStart] is passed in rather than recomputed here so a fetch that straddles local
+         * midnight stays anchored to the day the forecast was requested for. Resampling (rather
+         * than slicing 25 raw entries) is what makes the day **DST-safe**: local midnight is
+         * resolved as a real instant even on 23/25-hour days, and each "local hour H" then maps to
+         * `dayStart + H.hours`, the same nominal grid the fixtures use. Hours outside the forecast
+         * window clamp to its endpoints (see [UvForecast.uvAt]).
          */
-        fun fromForecast(
-            forecast: UvForecast,
-            zone: TimeZone,
-            clock: Clock = Clock.System,
-        ): UvDay {
-            val dayStart = clock.todayIn(zone).atStartOfDayIn(zone)
-            val hourlyUv = (0..24).map { hour -> forecast.uvAt(dayStart + hour.hours) }
-            return UvDay(
-                location = forecast.location,
-                dayStart = dayStart,
-                hourlyUv = hourlyUv,
-            )
-        }
+        fun fromForecast(forecast: UvForecast, dayStart: Instant): UvDay = UvDay(
+            location = forecast.location,
+            dayStart = dayStart,
+            hourlyUv = (0..24).map { hour -> forecast.uvAt(dayStart + hour.hours) },
+        )
 
         /**
          * A network-free **clear-sky estimate** for today at [location]: UV ∝ sin(solar elevation),

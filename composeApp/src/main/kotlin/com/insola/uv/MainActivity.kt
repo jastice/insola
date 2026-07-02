@@ -71,7 +71,7 @@ class MainActivity : ComponentActivity() {
 
         viewModel = ViewModelProvider(
             this,
-            viewModelFactory(forecastProvider, locationProvider, devMode = BuildConfig.DEBUG),
+            viewModelFactory(forecastProvider, locationProvider),
         )[DashboardViewModel::class.java]
 
         if (!hasLocationPermission()) {
@@ -85,7 +85,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        httpClient.close()
+        // The retained ViewModel keeps using this client across activity recreation (the factory
+        // isn't re-invoked), so only close when the activity is going away for good.
+        if (isFinishing) httpClient.close()
     }
 
     private fun hasLocationPermission(): Boolean =
@@ -95,10 +97,9 @@ class MainActivity : ComponentActivity() {
     private fun viewModelFactory(
         forecastProvider: OpenMeteoUvForecastProvider,
         locationProvider: ChainedLocationProvider,
-        devMode: Boolean,
     ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            DashboardViewModel(forecastProvider, locationProvider, devMode) as T
+            DashboardViewModel(forecastProvider, locationProvider) as T
     }
 }

@@ -22,13 +22,10 @@ data class UvForecast(
     val samples: List<UvSample>,
 )
 
-enum class Confidence { Low, Medium, High }
-
 data class ExposureInterval(
     val start: Instant,
     val end: Instant,
     val exposureFactor: Double,
-    val confidence: Confidence = Confidence.Medium,
 )
 
 /**
@@ -278,10 +275,6 @@ data class AttenuationTimeline(val patches: List<Patch>) {
             val elapsed = t - appliedAt
             return elapsed >= Duration.ZERO && elapsed < REAPPLY_HINT_DURATION
         }
-
-        /** Remaining time in the [REAPPLY_HINT_DURATION] countdown, for the UI bar. */
-        fun remainingHintAt(t: Instant): Duration =
-            ((appliedAt + REAPPLY_HINT_DURATION) - t).coerceAtLeast(Duration.ZERO)
 
         /**
          * Sub-slicing points across the modelling horizon — uniform [SAMPLING_STEP] grid so

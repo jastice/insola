@@ -25,7 +25,7 @@ Two-module Kotlin Multiplatform + Compose Multiplatform project:
 
 **iOS is stubbed.** `iosArm64`/`iosSimulatorArm64` targets are commented out in `shared/build.gradle.kts`. `shared/src/iosMain/` and `iosApp/` are placeholders. The Swift entrypoint expects `MainViewControllerKt.MainViewController()` from `shared`. Re-enable per `iosApp/README.md`.
 
-**Note:** `composeApp/src/` contains stray `commonMain`/`androidMain`/`iosMain` directories alongside the active `main/` source set — they are leftovers and not wired into the Android app's source sets. Add Android-only code to `composeApp/src/main/`.
+**Note:** the Android app module's only source set is `composeApp/src/main/` — add Android-only code there.
 
 **Live vs. dev mode.** The dashboard is driven by a neutral day-model, `domain/UvDay.kt` (location + local-midnight `dayStart` + 25 hourly UV samples + hour↔instant helpers). Both sources produce one:
 - **Live** (default): the dashboard opens **immediately** on a network-free clear-sky **estimate** (`UvDay.clearSkyEstimate`, synthesized from solar geometry at the device-timezone city), then upgrades in place to the real Open-Meteo forecast once it loads. "Now" tracks the real wall clock (`DashboardViewModel` ticks ~1/min); the curve scrubber is a **preview-only** marker decoupled from now. There is **no blocking load screen** — loading and any fetch error surface as an inline status row (small spinner / "Retry"); a failed fetch just leaves the estimate on screen (`DayMode.LiveEstimate`).

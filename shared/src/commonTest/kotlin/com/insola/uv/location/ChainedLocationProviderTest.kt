@@ -1,9 +1,11 @@
 package com.insola.uv.location
 
 import com.insola.uv.domain.GeoPoint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 
 /**
@@ -71,6 +73,18 @@ class ChainedLocationProviderTest {
     @Test
     fun emptyChain_resolvesNull() = runTest {
         assertNull(ChainedLocationProvider(emptyList()).resolve())
+    }
+
+    @Test
+    fun cancellation_propagates_insteadOfFallingThroughTheChain() = runTest {
+        // A cancelled resolve must die, not "succeed" via a later provider — otherwise a superseded
+        // load keeps running on a dead job and reports a spurious error from its next suspension.
+        val cancelled = object : LocationProvider {
+            override suspend fun resolve(): ResolvedLocation = throw CancellationException("superseded")
+        }
+        assertFailsWith<CancellationException> {
+            ChainedLocationProvider(listOf(cancelled, fakeProvider(tz))).resolve()
+        }
     }
 }
 

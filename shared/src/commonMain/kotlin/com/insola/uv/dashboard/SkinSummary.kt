@@ -45,8 +45,9 @@ data class SkinSummary(
     val minutesToAdequateVitD: Double?,
 ) {
     /**
-     * The largest tick we'd plot, in minutes. Used by the chart to scale its X axis. Clamped
-     * so very-low-UV days don't blow the axis out to infinity.
+     * The largest tick worth plotting, in minutes, clamped so very-low-UV days don't blow the
+     * scale out to infinity. The sundial currently uses its own fixed dial spans; this remains
+     * the model-side invariant the tests pin.
      */
     val maxRelevantMinutes: Double
         get() = listOfNotNull(minutesToSunburn, minutesToAdequateVitD)

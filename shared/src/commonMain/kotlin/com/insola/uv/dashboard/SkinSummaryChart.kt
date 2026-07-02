@@ -21,6 +21,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -32,6 +33,8 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -156,21 +159,17 @@ private fun UvLevelSlider(value: Float, peakUv: Double, onChange: (Float) -> Uni
 }
 
 /**
- * Full-width gradient bar standing in for the slider track. Stops sit at the WHO/EPA band
- * boundaries (UV 3 / 6 / 8 / 11) carrying the same palette as [uvBandColor], smoothly
- * interpolated — so the bar mirrors the colors used everywhere else in the app.
+ * Full-width gradient bar standing in for the slider track. Stops sit at the shared [UvBandStops]
+ * breakpoints, smoothly interpolated — so the bar mirrors the colors used everywhere else in the app.
  */
 @Composable
 private fun UvGradientTrack() {
-    fun frac(uv: Float) = (uv / MAX_REALISTIC_UV).coerceIn(0f, 1f)
-    val stops = arrayOf(
-        0f to UvGreen,
-        frac(3f) to UvYellow,
-        frac(6f) to UvOrange,
-        frac(8f) to UvRed,
-        frac(11f) to UvPurple,
-        1f to UvPurple,
-    )
+    val stops = remember {
+        val banded = UvBandStops.map { (uv, color) ->
+            (uv / MAX_REALISTIC_UV).toFloat().coerceIn(0f, 1f) to color
+        }
+        (banded + (1f to banded.last().second)).toTypedArray()
+    }
     Canvas(Modifier.fillMaxWidth().height(6.dp)) {
         drawRoundRect(
             brush = Brush.horizontalGradient(colorStops = stops),
@@ -209,6 +208,14 @@ private fun PreviewSpfChips(selected: Spf, onSelect: (Spf) -> Unit) {
 
 private data class ArcTick(val minutes: Double, val label: String, val showMinutes: Boolean = true)
 
+/** Spoken summary of the sundial's key boundaries for accessibility services. */
+private fun sundialDescription(summary: SkinSummary): String {
+    fun minutes(m: Double?) = m?.let { "${it.toInt()} minutes" } ?: "not reached at this UV level"
+    return "Sun dial at UV ${formatNumber(summary.peakUv, 1)}: first reddening in " +
+        "${minutes(summary.minutesToFirstReddening)}, sunburn in ${minutes(summary.minutesToSunburn)}, " +
+        "adequate vitamin D in ${minutes(summary.minutesToAdequateVitD)}."
+}
+
 @Composable
 private fun ConcentricSundial(summary: SkinSummary, previewSpf: Spf) {
     val onSurface = MaterialTheme.colorScheme.onSurface
@@ -231,7 +238,11 @@ private fun ConcentricSundial(summary: SkinSummary, previewSpf: Spf) {
         .orEmpty()
 
     Box(Modifier.fillMaxWidth().aspectRatio(1.7f)) {
-        Canvas(Modifier.fillMaxSize()) {
+        Canvas(
+            Modifier.fillMaxSize().semantics {
+                contentDescription = sundialDescription(summary)
+            },
+        ) {
             val burnStroke = BurnStroke.toPx()
             val vitDStroke = VitDStroke.toPx()
             val labelGap = LabelGap.toPx()

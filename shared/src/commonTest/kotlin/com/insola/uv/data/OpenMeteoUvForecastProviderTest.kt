@@ -2,19 +2,32 @@ package com.insola.uv.data
 
 import com.insola.uv.domain.GeoPoint
 import com.insola.uv.domain.UvDay
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.client.plugins.ClientRequestException
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
+import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.test.runTest
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.toLocalDateTime
+import kotlinx.datetime.todayIn
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * Open-Meteo parse + slice tests. The HTTP path itself is thin (a Ktor GET); the logic worth
- * pinning is the DTO decoding (`@SerialName` mapping, `null` → 0.0) and the DST-safe resample in
- * [UvDay.fromForecast]. Both run against captured JSON / fixed clocks — no network, no engine.
+ * Open-Meteo parse + slice tests: DTO decoding (`@SerialName` mapping, `null` → 0.0), malformed
+ * responses (non-2xx, missing/truncated `hourly`), and the DST-safe resample in
+ * [UvDay.fromForecast]. HTTP paths run against a [MockEngine] — no network.
  */
 class OpenMeteoUvForecastProviderTest {
 
@@ -72,7 +85,7 @@ class OpenMeteoUvForecastProviderTest {
         // 14:00 SGT on 2026-03-20 == 2026-03-20T06:00Z.
         val clock = FixedClock(Instant.parse("2026-03-20T06:00:00Z"))
 
-        val day = UvDay.fromForecast(forecast, zone, clock)
+        val day = UvDay.fromForecast(forecast, localMidnight(clock, zone))
 
         assertEquals(25, day.hourlyUv.size)
         // Slot 0 is local midnight and matches the forecast's first sample.
@@ -90,7 +103,7 @@ class OpenMeteoUvForecastProviderTest {
         val forecast = dto25("2026-03-08", offsetSeconds = -18000).toForecast(GeoPoint(40.71, -74.01))
         val clock = FixedClock(Instant.parse("2026-03-08T17:00:00Z")) // ~noon EST/EDT that day
 
-        val day = UvDay.fromForecast(forecast, zone, clock)
+        val day = UvDay.fromForecast(forecast, localMidnight(clock, zone))
 
         assertEquals(25, day.hourlyUv.size)
         assertLocalMidnight(day.dayStart, zone)
@@ -103,11 +116,15 @@ class OpenMeteoUvForecastProviderTest {
         val forecast = dto25("2026-11-01", offsetSeconds = -14400).toForecast(GeoPoint(40.71, -74.01))
         val clock = FixedClock(Instant.parse("2026-11-01T16:00:00Z"))
 
-        val day = UvDay.fromForecast(forecast, zone, clock)
+        val day = UvDay.fromForecast(forecast, localMidnight(clock, zone))
 
         assertEquals(25, day.hourlyUv.size)
         assertLocalMidnight(day.dayStart, zone)
     }
+
+    /** The day anchor the ViewModel computes before fetching: today's local midnight. */
+    private fun localMidnight(clock: Clock, zone: TimeZone): Instant =
+        clock.todayIn(zone).atStartOfDayIn(zone)
 
     private fun assertLocalMidnight(instant: Instant, zone: TimeZone) {
         val local = instant.toLocalDateTime(zone)
@@ -130,5 +147,70 @@ class OpenMeteoUvForecastProviderTest {
     @Test
     fun providerEndpoint_isHttps() {
         assertTrue(OpenMeteoUvForecastProvider.ENDPOINT.startsWith("https://"))
+    }
+
+    // --- HTTP path (MockEngine) ---
+
+    private fun mockedProvider(status: HttpStatusCode, body: String): OpenMeteoUvForecastProvider {
+        val engine = MockEngine {
+            respond(
+                content = body,
+                status = status,
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        }
+        val client = HttpClient(engine) {
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        }
+        return OpenMeteoUvForecastProvider(client)
+    }
+
+    @Test
+    fun fetch_happyPath_returnsParsedForecast() = runTest {
+        val provider = mockedProvider(HttpStatusCode.OK, singaporeJson)
+
+        val forecast = provider.fetchForecast(GeoPoint(1.35, 103.82))
+
+        assertEquals(25, forecast.samples.size)
+        assertEquals(11.5, forecast.samples.maxOf { it.uvIndex }, 1e-12)
+    }
+
+    @Test
+    fun fetch_badRequest_throws_insteadOfDecodingErrorBodyAsEmptyForecast() = runTest {
+        // Open-Meteo rejects bad requests with a JSON error body; without a status check that body
+        // would decode into an all-default response and render as a flat-zero "live forecast".
+        val provider = mockedProvider(
+            HttpStatusCode.BadRequest,
+            """{"error":true,"reason":"Latitude must be in range of -90 to 90"}""",
+        )
+
+        assertFailsWith<ClientRequestException> { provider.fetchForecast(GeoPoint(999.0, 0.0)) }
+    }
+
+    @Test
+    fun fetch_missingHourlyBlock_throws_insteadOfEmptyForecast() = runTest {
+        val provider = mockedProvider(HttpStatusCode.OK, """{"utc_offset_seconds":0}""")
+
+        assertFailsWith<IllegalArgumentException> { provider.fetchForecast(GeoPoint(1.35, 103.82)) }
+    }
+
+    @Test
+    fun toForecast_truncatedUvArray_throws_insteadOfZeroFilling() {
+        // 25 timestamps but only 12 UV values: the tail must not silently coerce to UV 0.0.
+        val dto = dto25("2026-03-20", offsetSeconds = 0).let {
+            it.copy(hourly = it.hourly.copy(uvIndex = it.hourly.uvIndex.take(12)))
+        }
+
+        assertFailsWith<IllegalArgumentException> { dto.toForecast(GeoPoint(0.0, 0.0)) }
+    }
+
+    @Test
+    fun toForecast_tooFewSamples_throws() {
+        val dto = AirQualityResponse(
+            utcOffsetSeconds = 0,
+            hourly = HourlyBlock(time = listOf("2026-03-20T00:00"), uvIndex = listOf(1.0)),
+        )
+
+        assertFailsWith<IllegalArgumentException> { dto.toForecast(GeoPoint(0.0, 0.0)) }
     }
 }

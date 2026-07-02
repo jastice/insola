@@ -28,24 +28,35 @@ class FusedDeviceLocationSource(context: Context) : DeviceLocationSource {
     private val appContext = context.applicationContext
     private val client by lazy { LocationServices.getFusedLocationProviderClient(appContext) }
 
+    private fun granted(permission: String): Boolean =
+        appContext.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun hasFine(): Boolean = granted(Manifest.permission.ACCESS_FINE_LOCATION)
+
     private fun hasPermission(): Boolean =
-        appContext.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            appContext.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        granted(Manifest.permission.ACCESS_COARSE_LOCATION) || hasFine()
 
     @SuppressLint("MissingPermission") // guarded by hasPermission()
     override suspend fun currentFix(): GeoPoint? {
         if (!hasPermission()) return null
+        // HIGH_ACCURACY engages the GPS provider (needed on emulators, where an injected `geo fix`
+        // is GPS-only and BALANCED would time out into the stale last-known default) — but it
+        // requires FINE. With a coarse-only grant ("Approximate location" on Android 12+) it throws
+        // SecurityException, so fall back to BALANCED rather than losing the fix entirely.
+        val priority =
+            if (hasFine()) Priority.PRIORITY_HIGH_ACCURACY else Priority.PRIORITY_BALANCED_POWER_ACCURACY
         val cancellation = CancellationTokenSource()
-        val point = withTimeoutOrNull(FIX_TIMEOUT_MS) {
-            // HIGH_ACCURACY engages the GPS provider. BALANCED relies on network/passive location,
-            // which on an emulator never sees the injected `geo fix` (a GPS-provider fix) and so
-            // times out into the stale last-known default. A one-shot fix, bounded by the timeout.
-            client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cancellation.token)
-                .awaitOrNull()
-                ?.let { GeoPoint(it.latitude, it.longitude) }
+        return try {
+            withTimeoutOrNull(FIX_TIMEOUT_MS) {
+                client.getCurrentLocation(priority, cancellation.token)
+                    .awaitOrNull()
+                    ?.let { GeoPoint(it.latitude, it.longitude) }
+            }
+        } finally {
+            // Idempotent; also stops the in-flight (GPS-on) request when the *caller* is cancelled,
+            // a path a plain "cancel on null" would skip.
+            cancellation.cancel()
         }
-        if (point == null) cancellation.cancel()
-        return point
     }
 
     @SuppressLint("MissingPermission") // guarded by hasPermission()

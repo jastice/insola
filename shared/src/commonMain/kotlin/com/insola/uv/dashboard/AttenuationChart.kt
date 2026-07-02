@@ -17,6 +17,8 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -88,8 +90,16 @@ internal fun AttenuationChart(
     }
     val applyMarkers = remember(timeline, now) { applyMarkersInsideWindow(timeline, now) }
 
+    val currentSpf = effectiveSpfAt(timeline, now)
     Box(modifier = modifier.fillMaxWidth().height(72.dp)) {
-        Canvas(Modifier.fillMaxSize()) {
+        Canvas(
+            Modifier.fillMaxSize().semantics {
+                contentDescription =
+                    "Sunscreen protection over the next 4 hours. Current effective SPF " +
+                        formatNumber(currentSpf, 0) +
+                        if (isInReapplyZone(timeline, advisor, now)) ". Reapply soon." else "."
+            },
+        ) {
             val leftPad = 22.dp.toPx()
             val rightPad = 4.dp.toPx()
             val topPad = 4.dp.toPx()

@@ -5,9 +5,9 @@ import com.insola.uv.domain.UvForecast
 import com.insola.uv.domain.UvSample
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.plugins.expectSuccess
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
-import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.UtcOffset
 import kotlinx.datetime.toInstant
@@ -29,8 +29,11 @@ class OpenMeteoUvForecastProvider(
     private val client: HttpClient,
 ) : UvForecastProvider {
 
-    override suspend fun fetchForecast(location: GeoPoint, dayStart: Instant): UvForecast {
+    override suspend fun fetchForecast(location: GeoPoint): UvForecast {
         val response: AirQualityResponse = client.get(ENDPOINT) {
+            // The API signals bad requests with a JSON error body that would otherwise decode into
+            // an all-default (empty) response — fail loudly instead of showing a flat-zero day.
+            expectSuccess = true
             parameter("latitude", location.latitude)
             parameter("longitude", location.longitude)
             parameter("hourly", "uv_index")
@@ -43,13 +46,17 @@ class OpenMeteoUvForecastProvider(
     companion object {
         const val ENDPOINT: String = "https://air-quality-api.open-meteo.com/v1/air-quality"
         private const val FORECAST_DAYS: Int = 2
+
+        /** One local day of hourly samples plus the trailing midnight — the minimum [com.insola.uv.domain.UvDay] can resample. */
+        internal const val MIN_SAMPLES: Int = 25
     }
 }
 
 /**
  * Open-Meteo Air-Quality response, pared down to the fields we read. Lenient defaults keep decoding
- * resilient if the API omits a block. Internal (not private) so the parse path is unit-testable
- * against captured JSON without spinning up an HTTP engine.
+ * from throwing on an omitted block — [toForecast] then rejects the response as malformed rather
+ * than letting an empty/truncated `hourly` masquerade as an all-zero UV day. Internal (not private)
+ * so the parse path is unit-testable against captured JSON without spinning up an HTTP engine.
  */
 @Serializable
 internal data class AirQualityResponse(
@@ -57,12 +64,15 @@ internal data class AirQualityResponse(
     val hourly: HourlyBlock = HourlyBlock(),
 ) {
     fun toForecast(location: GeoPoint): UvForecast {
+        require(hourly.time.size >= OpenMeteoUvForecastProvider.MIN_SAMPLES) {
+            "forecast has ${hourly.time.size} hourly samples; need at least ${OpenMeteoUvForecastProvider.MIN_SAMPLES}"
+        }
+        require(hourly.uvIndex.size == hourly.time.size) {
+            "uv_index has ${hourly.uvIndex.size} entries for ${hourly.time.size} timestamps"
+        }
         val offset = UtcOffset(seconds = utcOffsetSeconds)
-        val samples = hourly.time.indices.map { i ->
-            UvSample(
-                time = LocalDateTime.parse(hourly.time[i]).toInstant(offset),
-                uvIndex = hourly.uvIndex.getOrNull(i) ?: 0.0,
-            )
+        val samples = hourly.time.zip(hourly.uvIndex) { time, uv ->
+            UvSample(time = LocalDateTime.parse(time).toInstant(offset), uvIndex = uv ?: 0.0)
         }
         return UvForecast(location = location, samples = samples)
     }

@@ -1,9 +1,8 @@
 package com.insola.uv.dashboard
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +26,8 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
@@ -49,19 +50,25 @@ private class ChartCoords(val leftPad: Float, val totalWidth: Float) {
         ((x - leftPad) / plotWidth * 24.0).coerceIn(0.0, 24.0)
 }
 
-/** Tap-or-drag-to-scrub gesture, shared by the chart and timeline. */
-private fun Modifier.scrubHour(onHourChange: (Double) -> Unit): Modifier = pointerInput(Unit) {
-    val leftPad = ChartLeftPad.toPx()
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
-        val coords = ChartCoords(leftPad, size.width.toFloat())
-        onHourChange(coords.xToHour(down.position.x))
-        drag(down.id) { change ->
-            onHourChange(coords.xToHour(change.position.x))
+/**
+ * Tap-or-drag-to-scrub gesture, shared by the chart and timeline. Taps jump the marker; only
+ * *horizontal* drags scrub — vertical drags pass through untouched so the enclosing list can
+ * scroll from a touch that starts on the chart.
+ */
+private fun Modifier.scrubHour(onHourChange: (Double) -> Unit): Modifier = this
+    .pointerInput(onHourChange) {
+        val leftPad = ChartLeftPad.toPx()
+        detectTapGestures { offset ->
+            onHourChange(ChartCoords(leftPad, size.width.toFloat()).xToHour(offset.x))
+        }
+    }
+    .pointerInput(onHourChange) {
+        val leftPad = ChartLeftPad.toPx()
+        detectHorizontalDragGestures { change, _ ->
+            onHourChange(ChartCoords(leftPad, size.width.toFloat()).xToHour(change.position.x))
             change.consume()
         }
     }
-}
 
 /**
  * 24-hour UV projection + outdoor timeline + interactive time scrubber.
@@ -106,6 +113,12 @@ fun UvCurveChart(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(ChartHeight)
+                .semantics {
+                    contentDescription =
+                        "UV forecast chart. Current UV index ${formatNumber(currentUv, 1)} at " +
+                            "${formatClock(nowHour)}, peaking at ${formatNumber(peakUv, 1)}. " +
+                            "Drag horizontally to preview another hour."
+                }
                 .scrubHour(onHourChange),
         ) {
             val coords = ChartCoords(ChartLeftPad.toPx(), size.width)
@@ -302,13 +315,7 @@ private fun uvAtHour(hourlyUv: List<Double>, hour: Double): Double {
  * between them.
  */
 private fun buildUvGradient(yMax: Double): Brush {
-    val raw = listOf(
-        0.0 to UvGreen,
-        3.0 to UvYellow,
-        6.0 to UvOrange,
-        8.0 to UvRed,
-        11.0 to UvPurple,
-    ).filter { it.first <= yMax }
+    val raw = UvBandStops.filter { it.first <= yMax }
     val withTop = if (raw.last().first < yMax) raw + (yMax to uvBandColor(yMax)) else raw
     val stops = withTop
         .map { (uv, color) -> (1.0 - uv / yMax).toFloat().coerceIn(0f, 1f) to color }
@@ -318,4 +325,4 @@ private fun buildUvGradient(yMax: Double): Brush {
 
 /** Y-axis ticks at the standard UV breakpoints that fit within [yMax]. */
 private fun uvTicks(yMax: Double): List<Double> =
-    listOf(0.0, 3.0, 6.0, 8.0, 11.0).filter { it <= yMax }
+    UvBandStops.map { it.first }.filter { it <= yMax }

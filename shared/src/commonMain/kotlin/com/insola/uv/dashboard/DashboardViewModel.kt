@@ -17,6 +17,7 @@ import com.insola.uv.dose.VitaminDModel
 import com.insola.uv.location.LocationProvider
 import com.insola.uv.location.LocationSource
 import com.insola.uv.location.timezoneCentroid
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -25,7 +26,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
@@ -89,8 +89,7 @@ data class DashboardState(
     /** Latest patch still covering [now], or null. Drives the countdown bar in the UI. */
     val activeAttenuation: AttenuationTimeline.Patch?,
     /**
-     * Numeric UV transmittance actually applied to forward-looking projections at [now] —
-     * the stronger (smaller) of the always-on default SPF transmittance and whatever the
+     * Numeric UV transmittance actually applied to forward-looking projections at [now] — what the
      * [attenuation] timeline says at [now]. `1.0` means bare skin.
      */
     val effectiveTransmittance: Double,
@@ -145,7 +144,6 @@ data class DashboardUiState(
 class DashboardViewModel(
     private val forecastProvider: UvForecastProvider,
     private val locationProvider: LocationProvider,
-    @Suppress("unused") private val devMode: Boolean = false,
     private val clock: Clock = Clock.System,
     private val zone: TimeZone = TimeZone.currentSystemDefault(),
 ) : ViewModel() {
@@ -165,16 +163,13 @@ class DashboardViewModel(
     private var loadJob: Job? = null
 
     /**
-     * Real-clock tick, re-emitting roughly once a minute so the live "now" marker advances on its
-     * own. Dev/fixture mode ignores the value (scrubber-as-now), but keeping it in the combine is
-     * harmless — recomputing the same fixture state once a minute costs nothing.
+     * Real-clock tick, advanced roughly once a minute so the live "now" marker moves on its own,
+     * and bumped immediately by user actions (see [currentNow]) so a just-applied patch or session
+     * is visible without waiting out the tick. Dev/fixture mode ignores the value (scrubber-as-now),
+     * but keeping it in the combine is harmless — recomputing the same fixture state once a minute
+     * costs nothing.
      */
-    private val nowTickFlow: StateFlow<Instant> = flow {
-        while (true) {
-            emit(clock.now())
-            delay(NOW_TICK_MILLIS)
-        }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, clock.now())
+    private val nowTickFlow = MutableStateFlow(clock.now())
 
     /** Bundle the three skin/exposure inputs so the top-level [combine] stays within its 5-arg limit. */
     private val skinInputsFlow: Flow<SkinInputs> =
@@ -199,8 +194,27 @@ class DashboardViewModel(
         )
 
     init {
+        viewModelScope.launch {
+            while (true) {
+                delay(NOW_TICK_MILLIS)
+                nowTickFlow.value = clock.now()
+                rollOverDayIfStale()
+            }
+        }
         // The screen already shows the estimate; load the real forecast over it.
         refresh()
+    }
+
+    /**
+     * Re-anchor the day-model when the local date has moved past it (app left open across
+     * midnight), so the dashboard never keeps showing yesterday's curve as "now". Compares local
+     * dates rather than `dayStart + 24h` so a 25-hour DST day doesn't roll over an hour early.
+     */
+    private fun rollOverDayIfStale() {
+        val load = loadStateFlow.value
+        if (load.mode == DayMode.Fixture) return
+        if (loadJob?.isActive == true) return // a load is already in flight; let it land
+        if (clock.todayIn(zone).atStartOfDayIn(zone) > load.day.dayStart) refresh()
     }
 
     private fun toUiState(
@@ -237,7 +251,7 @@ class DashboardViewModel(
         if (selectedScenarioIdFlow.value != null) return // dev fixture is pinned; nothing to fetch
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
-            loadStateFlow.value = loadStateFlow.value.copy(refreshing = true, error = null)
+            loadStateFlow.value = loadStateFlow.value.copy(refreshing = true, error = null, errorDetail = null)
             val resolved = locationProvider.resolve()
             // Re-anchor the estimate to the resolved location so the city/curve reflect the best fix
             // we have even before (or without) the network forecast.
@@ -253,9 +267,13 @@ class DashboardViewModel(
             }
             val point = resolved?.point ?: loadStateFlow.value.day.location
             val day = try {
+                // Anchor the day before the fetch and thread it through, so a request that
+                // straddles local midnight stays pinned to the day it was issued for.
                 val dayStart = clock.todayIn(zone).atStartOfDayIn(zone)
-                val forecast = forecastProvider.fetchForecast(point, dayStart)
-                UvDay.fromForecast(forecast, zone, clock)
+                val forecast = forecastProvider.fetchForecast(point)
+                UvDay.fromForecast(forecast, dayStart)
+            } catch (e: CancellationException) {
+                throw e // a newer load (or a pinned fixture) superseded this one — don't report it
             } catch (e: Throwable) {
                 // Full stack trace to logcat (Android routes println to System.out); a compact
                 // type+message goes to the UI so the cause is visible without a debugger.
@@ -314,6 +332,7 @@ class DashboardViewModel(
         selectedScenarioIdFlow.value = null
         sessionsFlow.value = emptyList()
         attenuationFlow.value = AttenuationTimeline.Empty
+        previewHourFlow.value = wallClockHourOfDay(clock, zone)
         loadStateFlow.value = initialEstimate()
         refresh()
     }
@@ -366,20 +385,25 @@ class DashboardViewModel(
         }
     }
 
-    fun clearSessions() {
-        sessionsFlow.value = emptyList()
-    }
-
     fun removeSession(index: Int) {
         val list = sessionsFlow.value
         if (index !in list.indices) return
         sessionsFlow.value = list.toMutableList().apply { removeAt(index) }
     }
 
-    /** The effective "now": the scrubber instant in fixture mode, the real clock otherwise. */
+    /**
+     * The effective "now" for a user action: the scrubber instant in fixture mode, the real clock
+     * otherwise. Reading the live clock also advances [nowTickFlow] — the UI recomputes against the
+     * tick, so without the bump an action stamped a few seconds *after* the last tick would stay
+     * invisible (filtered out as "in the future") until the next minute.
+     */
     private fun currentNow(): Instant {
         val load = loadStateFlow.value
-        return if (load.mode == DayMode.Fixture) load.day.hourToInstant(previewHourFlow.value) else clock.now()
+        return if (load.mode == DayMode.Fixture) {
+            load.day.hourToInstant(previewHourFlow.value)
+        } else {
+            clock.now().also { nowTickFlow.value = it }
+        }
     }
 
     private data class LoadState(

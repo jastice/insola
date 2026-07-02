@@ -18,7 +18,7 @@ import kotlin.math.cos
  * against the user's MED. Vitamin-D synthesis is driven by a *different* action spectrum
  * (CIE previtamin-D3) sitting in a narrow UV-B window, so its atmospheric attenuation
  * with solar zenith angle is much steeper. The VitD/erythemal irradiance ratio is itself
- * a function of solar elevation — ~2.0 with the sun overhead, ~1.0 near SZA 55°, ~0.5
+ * a function of solar elevation — ~2.0 with the sun overhead, ~1.0 near SZA 60°, ~0.5
  * near SZA 75°, 0 at the horizon (McKenzie 2009; Webb & Engelsen 2006 / FastRT).
  *
  * Integration shape mirrors [DoseIntegrator] / [BurnModel] — UV-index over time — but
@@ -40,6 +40,22 @@ import kotlin.math.cos
 object VitaminDModel {
 
     enum class Bucket { None, Trace, Low, Adequate, Sufficient }
+
+    /**
+     * Holick's rule: 1 Standard Vitamin D Dose (~1000 IU) ≈ ¼ MED on ¼ of the body, i.e. ¹⁄₁₆ of
+     * the baseline-phototype MED in vit-D-weighted score units (the ¼ body fraction is folded into
+     * `skinExposedFraction`). Single source for the bucket thresholds and the UI's vit-D bar scale.
+     */
+    const val SDD_FRACTION_OF_MED: Double = 1.0 / 16.0
+
+    /** [Bucket] lower bounds (Trace→Low, Low→Adequate, Adequate→Sufficient) as fractions of 1 SDD. */
+    const val LOW_MIN_SDD: Double = 0.25
+    const val ADEQUATE_MIN_SDD: Double = 0.5
+    const val SUFFICIENT_MIN_SDD: Double = 1.0
+
+    /** One SDD expressed in vit-D-weighted score units for [profile]'s baseline phototype. */
+    fun sddFor(profile: SkinProfile): Double =
+        profile.phototype.medThresholdUvIndexHours * SDD_FRACTION_OF_MED
 
     fun accumulate(
         forecast: UvForecast,
@@ -86,25 +102,15 @@ object VitaminDModel {
         // [effectiveYield]; the two corrections compose symmetrically with the burn-side
         // multiplier (tan extends burn budget AND extends time-to-Adequate).
         val effective = effectiveYield(score, profile)
-        val sdd = profile.phototype.medThresholdUvIndexHours / 16.0
+        val sdd = sddFor(profile)
         return when {
-            effective <= 0.0        -> Bucket.None
-            effective < 0.25 * sdd  -> Bucket.Trace     // < ¼ SDD
-            effective < 0.5 * sdd   -> Bucket.Low       // ¼ – ½ SDD
-            effective < sdd         -> Bucket.Adequate  // ½ – 1 SDD
-            else                    -> Bucket.Sufficient    // ≥ 1 SDD
+            effective <= 0.0                     -> Bucket.None
+            effective < LOW_MIN_SDD * sdd        -> Bucket.Trace     // < ¼ SDD
+            effective < ADEQUATE_MIN_SDD * sdd   -> Bucket.Low       // ¼ – ½ SDD
+            effective < SUFFICIENT_MIN_SDD * sdd -> Bucket.Adequate  // ½ – 1 SDD
+            else                                 -> Bucket.Sufficient // ≥ 1 SDD
         }
     }
-
-    fun bucketForIntervals(
-        forecast: UvForecast,
-        intervals: List<ExposureInterval>,
-        profile: SkinProfile,
-        skinExposedFraction: Double,
-    ): Bucket = bucket(
-        accumulateOverIntervals(forecast, intervals, skinExposedFraction),
-        profile,
-    )
 
     /**
      * Ratio of vitamin-D-weighted to erythemally-weighted UV at the given solar elevation.

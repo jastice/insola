@@ -4,7 +4,9 @@ import com.insola.uv.domain.GeoPoint
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.get
+import kotlinx.coroutines.CancellationException
 import kotlinx.datetime.Clock
+import kotlinx.datetime.IllegalTimeZoneException
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.offsetIn
 import kotlinx.serialization.Serializable
@@ -66,6 +68,8 @@ class DeviceLocationProvider(
         val (point, source) = fix
         val place = try {
             geocoder?.placeName(point)
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Throwable) {
             null
         }
@@ -76,13 +80,16 @@ class DeviceLocationProvider(
 /**
  * Tries each provider in order and returns the first non-null result. With a terminal
  * [TimezoneLocationProvider] last, this always yields *something*. A provider that throws is
- * treated as "no result" so one bad strategy can't sink the chain.
+ * treated as "no result" so one bad strategy can't sink the chain — except cancellation, which
+ * must propagate so a superseded resolve doesn't keep running (and "succeeding") on a dead job.
  */
 class ChainedLocationProvider(private val providers: List<LocationProvider>) : LocationProvider {
     override suspend fun resolve(): ResolvedLocation? {
         for (provider in providers) {
             val resolved = try {
                 provider.resolve()
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Throwable) {
                 null
             }
@@ -103,6 +110,8 @@ class IpLocationProvider(
     override suspend fun resolve(): ResolvedLocation? {
         val response = try {
             client.get(endpoint).body<IpWhoResponse>()
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Throwable) {
             return null
         }
@@ -166,7 +175,7 @@ private fun placeFromZone(id: String): String? {
 private fun offsetCentroid(id: String, clock: Clock): GeoPoint {
     val offsetSeconds = try {
         clock.now().offsetIn(TimeZone.of(id)).totalSeconds
-    } catch (_: Throwable) {
+    } catch (_: IllegalTimeZoneException) {
         0
     }
     val longitude = (offsetSeconds / 3600.0 * 15.0).coerceIn(-180.0, 180.0)

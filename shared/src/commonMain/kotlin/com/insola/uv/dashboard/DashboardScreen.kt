@@ -58,6 +58,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -79,20 +81,25 @@ fun DashboardScreen(viewModel: DashboardViewModel, devMode: Boolean = false, mod
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val state = ui.dashboard
     val sky = skyColors(state.solarElevationDeg)
-    val scheme = MaterialTheme.colorScheme.copy(
-        background = sky.background,
-        onBackground = sky.onBackground,
-        surface = sky.surface,
-        surfaceContainerLowest = sky.surface,
-        surfaceContainerLow = sky.surface,
-        surfaceContainer = sky.surface,
-        surfaceContainerHigh = sky.surface,
-        surfaceContainerHighest = sky.surface,
-        // Tonal-elevation overlay (Card et al. mix surfaceTint into surface based on elevation).
-        // Default surfaceTint is primary purple, which drowns our hue back to gray; null it out.
-        // (Leaving surfaceVariant alone so the bar tracks stay visibly distinct.)
-        surfaceTint = Color.Transparent,
-    )
+    // Remembered because ColorScheme compares by reference: a fresh copy every recomposition
+    // (every scrub frame / minute tick) would invalidate the whole themed subtree non-skippably.
+    val base = MaterialTheme.colorScheme
+    val scheme = remember(base, sky) {
+        base.copy(
+            background = sky.background,
+            onBackground = sky.onBackground,
+            surface = sky.surface,
+            surfaceContainerLowest = sky.surface,
+            surfaceContainerLow = sky.surface,
+            surfaceContainer = sky.surface,
+            surfaceContainerHigh = sky.surface,
+            surfaceContainerHighest = sky.surface,
+            // Tonal-elevation overlay (Card et al. mix surfaceTint into surface based on elevation).
+            // Default surfaceTint is primary purple, which drowns our hue back to gray; null it out.
+            // (Leaving surfaceVariant alone so the bar tracks stay visibly distinct.)
+            surfaceTint = Color.Transparent,
+        )
+    }
     MaterialTheme(colorScheme = scheme) {
         // Text outside a Surface (e.g. the scenario description) reads LocalContentColor, which
         // defaults to black. Provide the bg-contrast color so labels stay readable at night.
@@ -118,7 +125,9 @@ private fun DashboardContent(
     // feeds the Day-tab integrals (those are driven only by applied, decaying patches). The SPF
     // choice is scenario-independent; the UV level resets to each scenario's peak.
     var previewSpf by rememberSaveable { mutableStateOf(Spf.Off) }
-    var previewUv by remember(state.day.dayStart) {
+    // Keyed on the whole day-model (not just dayStart): the estimate→forecast upgrade and fixture
+    // switches keep the same local midnight, but each new curve should re-seed the slider at its peak.
+    var previewUv by remember(state.day) {
         mutableFloatStateOf(state.skinSummary.peakUv.toFloat())
     }
     val selectedScenarioId by viewModel.selectedScenarioId.collectAsStateWithLifecycle()
@@ -391,7 +400,11 @@ private fun UvTodayCard(
                                 )
                             } else {
                                 // Unicode refresh glyph — avoids a material-icons dependency for one icon.
-                                Text("↻", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    "↻",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.semantics { contentDescription = "Refresh forecast" },
+                                )
                             }
                         }
                     }
@@ -479,7 +492,14 @@ private fun SessionList(state: DashboardState, onRemove: (Int) -> Unit) {
                 TextButton(
                     onClick = { onRemove(index) },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                ) { Text("×") }
+                ) {
+                    Text(
+                        "×",
+                        modifier = Modifier.semantics {
+                            contentDescription = "Remove session $timeRange"
+                        },
+                    )
+                }
             }
         }
     }
@@ -588,13 +608,6 @@ private fun BurnTimeLine(label: String, time: Duration?) {
     Text(text, style = MaterialTheme.typography.labelSmall)
 }
 
-/**
- * Vitamin-D bar: full width represents 1.5 × SDD (one standard daily dose) so the Sufficient band
- * has visible headroom past the 1-SDD line. A smooth gradient runs gray → amber → light green →
- * deep green, positionally anchored to the bucket boundaries (0.25, 0.5, 1.0 SDD as fractions
- * of the bar = 0.167, 0.333, 0.667). The fill stops at the current score so the head's color
- * always matches the user's current bucket.
- */
 private fun burnBudgetSubtitle(state: DashboardState): String {
     val baseline = state.profile.phototype.medThresholdUvIndexHours
     val effective = state.profile.effectiveMedUvIndexHours
@@ -610,28 +623,33 @@ private fun burnBudgetSubtitle(state: DashboardState): String {
         "${formatNumber(state.accumulatedDose, 2)} of $medText"
 }
 
+/** Vit-D bar scale: full width = 1.5 SDD so the Sufficient band keeps visible headroom past 1 SDD. */
+private const val VITD_BAR_MAX_SDD = 1.5
+
 @Composable
 private fun VitaminDBar(score: Double, profile: SkinProfile) {
     // Fill matches the bucket: SDD anchored to baseline phototype MED, score attenuated by
     // melanin (acclimatization) — see VitaminDModel.bucket / effectiveYield.
     val effective = VitaminDModel.effectiveYield(score, profile)
-    val maxScore = 1.5 * (profile.phototype.medThresholdUvIndexHours / 16.0)
+    val maxScore = VITD_BAR_MAX_SDD * VitaminDModel.sddFor(profile)
     val frac = (effective / maxScore).coerceIn(0.0, 1.0).toFloat()
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
+    // Gradient anchors sit at the model's bucket boundaries mapped onto the 1.5-SDD bar.
+    val stops = remember {
+        arrayOf(
+            0f to VitDTrace,
+            (VitaminDModel.LOW_MIN_SDD / VITD_BAR_MAX_SDD).toFloat() to VitDLow,
+            (VitaminDModel.ADEQUATE_MIN_SDD / VITD_BAR_MAX_SDD).toFloat() to VitDAdequate,
+            (VitaminDModel.SUFFICIENT_MIN_SDD / VITD_BAR_MAX_SDD).toFloat() to VitDSufficient,
+            1f to VitDSufficient,
+        )
+    }
     Canvas(modifier = Modifier.fillMaxWidth().height(12.dp)) {
         val w = size.width
         val h = size.height
         drawRect(color = trackColor, topLeft = Offset.Zero, size = Size(w, h))
         if (frac > 0f) {
-            val brush = Brush.horizontalGradient(
-                0.000f to VitDTrace,
-                0.167f to VitDLow,
-                0.333f to VitDAdequate,
-                0.667f to VitDSufficient,
-                1.000f to VitDSufficient,
-                startX = 0f,
-                endX = w,
-            )
+            val brush = Brush.horizontalGradient(colorStops = stops, startX = 0f, endX = w)
             drawRect(brush = brush, topLeft = Offset.Zero, size = Size(w * frac, h))
         }
     }
