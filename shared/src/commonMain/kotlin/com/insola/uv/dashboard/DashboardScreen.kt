@@ -128,7 +128,7 @@ private fun DashboardContent(
     // The card header names where the forecast is for: the resolved place (live) or the scenario.
     val headerTitle = when {
         isFixture -> scenarioName ?: "UV today"
-        !ui.place.isNullOrBlank() -> ui.place!!
+        !ui.place.isNullOrBlank() -> ui.place
         else -> "Current location"
     }
     val headerSubtitle = when {
